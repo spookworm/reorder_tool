@@ -1,0 +1,250 @@
+:root{
+    --primary:#000;
+    --bg:#fff;
+    --border:#000;
+}
+*{
+    box-sizing:border-box;
+    font-family:Segoe UI,Tahoma,sans-serif;
+}
+body{
+    margin:0;
+    padding:20px;
+    background:var(--bg);
+    color:#222;
+    font-size:14px;
+}
+.container{
+    max-width:1200px;
+    margin:auto;
+}
+.controls,
+.sort-controls{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+    margin-bottom:15px;
+}
+/* =====================
+   CONTROLS
+===================== */
+button,
+input,
+select,
+textarea{
+    font-family:inherit;
+    font-size:14px;
+}
+button,
+input,
+select{
+    min-height:30px;
+    padding:4px 8px;
+}
+textarea{
+    padding:5px;
+}
+button{
+    border:2px solid #000;
+    background:#fff;
+    cursor:pointer;
+}
+button:disabled{
+    background:#aaa;
+}
+.search{
+    flex:1;
+}
+/* =====================
+   TABLE
+===================== */
+table{
+    width:max-content;
+    table-layout:fixed;
+    border-collapse:separate;
+    border-spacing:0;
+}
+.table-container{
+    height:70vh;
+    overflow:auto;
+    border:1px solid #000;
+    position:relative;
+}
+th,
+td{
+    white-space:nowrap;
+    text-overflow:ellipsis;
+}
+th{
+    position:sticky;
+    top:0;
+    z-index:100;
+    height:34px;
+    padding:5px;
+    background:#000;
+    color:#fff;
+    font-size:13px;
+    overflow:hidden;
+}
+td{
+    height:36px;
+    padding:3px 6px;
+    border-bottom:1px solid #000;
+    vertical-align:middle;
+    overflow:hidden;
+    font-size:13px;
+    position:relative;
+}
+tr{
+    height:36px;
+}
+td:has(.prerequisite-wrapper){
+    overflow:visible;
+    z-index:10;
+}
+.table-container{
+    overflow-x:auto;
+    overflow-y:auto;
+}
+/* =====================
+   COLUMN DRAG / RESIZE
+===================== */
+.column-draggable{
+    cursor:grab;
+    padding-right:20px;
+}
+.fixed-column{
+    cursor:default;
+}
+.resize-handle{
+    position:absolute;
+    right:-5px;
+    top:0;
+    width:15px;
+    height:100%;
+    cursor:col-resize;
+}
+/* =====================
+   ROW DRAG
+===================== */
+tr[draggable=true]{
+    cursor:grab;
+}
+.dragging{
+    opacity:.4;
+}
+/* =====================
+   REORDER CONTROLS
+===================== */
+.reorder-cell{
+    padding:2px;
+}
+.reorder-controls{
+    display:flex;
+    gap:3px;
+    align-items:center;
+    justify-content:center;
+}
+.reorder-controls button{
+    width:24px;
+    height:24px;
+    min-height:24px;
+    padding:0;
+}
+.move-input{
+    width:40px;
+    height:24px;
+    min-height:24px;
+    padding:0;
+    text-align:center;
+}
+/* =====================
+   TAP TO EDIT
+===================== */
+.cell-display{
+    display:flex;
+    align-items:center;
+    width:100%;
+    min-height:28px;
+    padding:3px 5px;
+    cursor:pointer;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.cell-display:hover{
+    background:#f0f0f0;
+}
+.cell-editing{
+    width:100%;
+    min-height:30px;
+    height:30px;
+    padding:4px;
+}
+/* =====================
+   PRIVATE NOTES
+===================== */
+textarea.cell-editing{
+    height:80px;
+    min-height:80px;
+    resize:vertical;
+}
+/* =====================
+   PREREQUISITE EDITOR
+===================== */
+/* =========================
+   PREREQUISITE SUGGESTIONS
+========================= */
+.prerequisite-wrapper{
+    position:relative;
+    width:100%;
+}
+.prerequisite-editor{
+    width:100%;
+    height:30px;
+    min-height:30px;
+    padding:4px;
+}
+.prerequisite-suggestions{
+    position:absolute;
+    left:0;
+    top:100%;
+    width:100%;
+    background:#fff;
+    border:1px solid #000;
+    z-index:5000;
+    max-height:200px;
+    overflow-y:auto;
+}
+.prerequisite-option{
+    padding:8px;
+    cursor:pointer;
+    white-space:nowrap;
+}
+.prerequisite-option:hover{
+    background:#ddd;
+}
+/* =====================
+   TABLE EDIT CONTROLS
+===================== */
+td input,
+td select,
+td textarea{
+    font-size:13px;
+}
+td select{
+    height:28px;
+}
+/* =====================
+   SCD COLUMN
+===================== */
+.scd-column{
+    font-family:monospace;
+}
+/* =====================
+   MOBILE
+===================== */
+@media(max-width:700px){
+    body{
+        padding:10px;
+    }
+}
