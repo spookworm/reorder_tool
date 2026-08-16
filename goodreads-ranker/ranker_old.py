@@ -27,26 +27,21 @@ from openpyxl.utils import get_column_letter
 # ============================================================
 
 APP_NAME = "Goodreads To-Read Ranker"
-APP_VERSION = "2.0"
+APP_VERSION = "1.1"
 
 DEFAULT_RATING = 1500.0
 DEFAULT_RD = 350.0
 DEFAULT_VOLATILITY = 0.06
 
-# Faster defaults for large libraries.
-DEFAULT_TARGET_COMPARISONS = 6
-MIN_TARGET_COMPARISONS = 3
-MAX_TARGET_COMPARISONS = 20
-
-# Presets shown in the GUI.
-QUICK_COMPARISONS = 3
-BALANCED_COMPARISONS = 6
-ACCURATE_COMPARISONS = 12
-
-STATE_DIRECTORY_NAME = ".ranker_state"
-
+# Glicko-2 constants
 GLICKO_SCALE = 173.7178
 TAU = 0.5
+
+DEFAULT_TARGET_COMPARISONS = 12
+MIN_TARGET_COMPARISONS = 5
+MAX_TARGET_COMPARISONS = 30
+
+STATE_DIRECTORY_NAME = ".ranker_state"
 
 
 # ============================================================
@@ -54,17 +49,25 @@ TAU = 0.5
 # ============================================================
 
 def normalize(value) -> str:
+    """Convert an Excel value to a clean string."""
     if value is None:
         return ""
 
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
 
     return str(value).strip()
 
 
 def normalize_header(value) -> str:
-    return normalize(value).replace("\ufeff", "").strip().lower()
+    """Normalize an Excel column header for comparison."""
+    return (
+        normalize(value)
+        .replace("\ufeff", "")
+        .strip()
+        .lower()
+    )
 
 
 def now_iso() -> str:
@@ -72,16 +75,28 @@ def now_iso() -> str:
 
 
 def safe_filename(value: str) -> str:
-    value = re.sub(r'[<>:"/\\|?*]', "_", value)
-    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(
+        r'[<>:"/\\|?*]',
+        "_",
+        value,
+    )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    ).strip()
+
     return value or "ranking"
 
 
 def truncate(text: str, length: int) -> str:
     text = normalize(text)
+
     if len(text) <= length:
         return text
-    return text[:length - 1].rstrip() + "…"
+
+    return text[: length - 1].rstrip() + "…"
 
 
 # ============================================================
@@ -93,6 +108,7 @@ class Rating:
     rating: float = DEFAULT_RATING
     rd: float = DEFAULT_RD
     volatility: float = DEFAULT_VOLATILITY
+
     comparisons: int = 0
     wins: int = 0
     losses: int = 0
@@ -100,13 +116,17 @@ class Rating:
 
 
 def to_glicko(rating: Rating):
-    return (
-        (rating.rating - 1500.0) / GLICKO_SCALE,
-        rating.rd / GLICKO_SCALE,
-    )
+    mu = (rating.rating - 1500.0) / GLICKO_SCALE
+    phi = rating.rd / GLICKO_SCALE
+
+    return mu, phi
 
 
-def from_glicko(mu: float, phi: float, volatility: float) -> Rating:
+def from_glicko(
+    mu: float,
+    phi: float,
+    volatility: float,
+) -> Rating:
     return Rating(
         rating=1500.0 + GLICKO_SCALE * mu,
         rd=max(1.0, GLICKO_SCALE * phi),
@@ -116,15 +136,24 @@ def from_glicko(mu: float, phi: float, volatility: float) -> Rating:
 
 def g_function(phi: float) -> float:
     return 1.0 / math.sqrt(
-        1.0 + 3.0 * phi * phi / (math.pi * math.pi)
+        1.0
+        + 3.0 * phi * phi / (math.pi * math.pi)
     )
 
 
-def expected_score(mu: float, opponent_mu: float, opponent_phi: float) -> float:
-    exponent = -g_function(opponent_phi) * (mu - opponent_mu)
+def expected_score(
+    mu: float,
+    opponent_mu: float,
+    opponent_phi: float,
+) -> float:
+    exponent = (
+        -g_function(opponent_phi)
+        * (mu - opponent_mu)
+    )
 
     if exponent > 700:
         return 0.0
+
     if exponent < -700:
         return 1.0
 
@@ -142,18 +171,32 @@ def volatility_function(
 
     denominator = (
         2.0
-        * (phi * phi + variance + exp_x)
-        * (phi * phi + variance + exp_x)
+        * (
+            phi * phi
+            + variance
+            + exp_x
+        )
+        * (
+            phi * phi
+            + variance
+            + exp_x
+        )
     )
 
-    numerator = exp_x * (
-        delta * delta
-        - phi * phi
-        - variance
-        - exp_x
+    numerator = (
+        exp_x
+        * (
+            delta * delta
+            - phi * phi
+            - variance
+            - exp_x
+        )
     )
 
-    return numerator / denominator - (x - a) / (TAU * TAU)
+    return (
+        numerator / denominator
+        - (x - a) / (TAU * TAU)
+    )
 
 
 def calculate_volatility(
@@ -162,13 +205,27 @@ def calculate_volatility(
     delta: float,
     variance: float,
 ) -> float:
-    a = math.log(volatility * volatility)
+    """
+    Glicko-2 volatility iteration.
+    """
+
+    a = math.log(
+        volatility * volatility
+    )
+
     A = a
 
-    if delta * delta > phi * phi + variance:
-        B = math.log(delta * delta - phi * phi - variance)
+    if delta * delta > (
+        phi * phi + variance
+    ):
+        B = math.log(
+            delta * delta
+            - phi * phi
+            - variance
+        )
     else:
         k = 1
+
         while True:
             B = a - k * TAU
 
@@ -188,8 +245,21 @@ def calculate_volatility(
             if k > 100:
                 break
 
-    f_a = volatility_function(A, delta, phi, variance, a)
-    f_b = volatility_function(B, delta, phi, variance, a)
+    f_a = volatility_function(
+        A,
+        delta,
+        phi,
+        variance,
+        a,
+    )
+
+    f_b = volatility_function(
+        B,
+        delta,
+        phi,
+        variance,
+        a,
+    )
 
     for _ in range(100):
         if abs(B - A) < 1e-8:
@@ -200,7 +270,12 @@ def calculate_volatility(
         if abs(denominator) < 1e-15:
             break
 
-        C = A + (A - B) * f_a / denominator
+        C = (
+            A
+            + (A - B)
+            * f_a
+            / denominator
+        )
 
         f_c = volatility_function(
             C,
@@ -227,13 +302,27 @@ def glicko_update(
     opponents: list[Rating],
     scores: list[float],
 ) -> Rating:
+    """
+    Perform a Glicko-2 update.
+
+    score:
+        1.0 = win
+        0.5 = tie
+        0.0 = loss
+    """
+
     if not opponents:
         result = copy.deepcopy(player)
 
-        phi = player.rd / GLICKO_SCALE
+        phi = (
+            player.rd
+            / GLICKO_SCALE
+        )
+
         phi_star = math.sqrt(
             phi * phi
-            + player.volatility * player.volatility
+            + player.volatility
+            * player.volatility
         )
 
         result.rd = min(
@@ -248,10 +337,17 @@ def glicko_update(
     variance_inverse = 0.0
     score_sum = 0.0
 
-    for opponent, score in zip(opponents, scores):
-        opponent_mu, opponent_phi = to_glicko(opponent)
+    for opponent, score in zip(
+        opponents,
+        scores,
+    ):
+        opponent_mu, opponent_phi = (
+            to_glicko(opponent)
+        )
 
-        g_value = g_function(opponent_phi)
+        g_value = g_function(
+            opponent_phi
+        )
 
         expected = expected_score(
             mu,
@@ -266,13 +362,21 @@ def glicko_update(
             * (1.0 - expected)
         )
 
-        score_sum += g_value * (score - expected)
+        score_sum += (
+            g_value
+            * (score - expected)
+        )
 
     if variance_inverse <= 0:
         return copy.deepcopy(player)
 
-    variance = 1.0 / variance_inverse
-    delta = variance * score_sum
+    variance = (
+        1.0 / variance_inverse
+    )
+
+    delta = (
+        variance * score_sum
+    )
 
     new_volatility = calculate_volatility(
         phi,
@@ -283,24 +387,31 @@ def glicko_update(
 
     phi_star = math.sqrt(
         phi * phi
-        + new_volatility * new_volatility
+        + new_volatility
+        * new_volatility
     )
 
     new_phi = 1.0 / math.sqrt(
-        1.0 / (phi_star * phi_star)
+        1.0 / (
+            phi_star * phi_star
+        )
         + 1.0 / variance
     )
 
     new_mu = (
         mu
-        + new_phi * new_phi * score_sum
+        + new_phi
+        * new_phi
+        * score_sum
     )
 
-    return from_glicko(
+    result = from_glicko(
         new_mu,
         new_phi,
         new_volatility,
     )
+
+    return result
 
 
 # ============================================================
@@ -322,6 +433,7 @@ class Book:
     book_id: str = ""
 
     original_row: int = 0
+
     original: dict = None
 
     def __post_init__(self):
@@ -333,32 +445,72 @@ class Book:
 # GOODREADS IMPORTER
 # ============================================================
 
-def find_header(headers: list, wanted: str):
-    wanted = normalize_header(wanted)
+def find_header(
+    headers: list,
+    wanted: str,
+):
+    """
+    Find a header by normalized text.
+    """
+
+    wanted_normalized = normalize_header(
+        wanted
+    )
 
     for header in headers:
-        if normalize_header(header) == wanted:
+        if (
+            normalize_header(header)
+            == wanted_normalized
+        ):
             return header
 
     return None
 
 
-def find_first_header(headers: list, candidates: list[str]):
-    for candidate in candidates:
-        found = find_header(headers, candidate)
+def find_first_header(
+    headers: list,
+    candidates: list[str],
+):
+    """
+    Return the first matching header from
+    a list of possible Goodreads column names.
+    """
 
-        if found is not None:
-            return found
+    for candidate in candidates:
+        result = find_header(
+            headers,
+            candidate,
+        )
+
+        if result is not None:
+            return result
 
     return None
 
 
-def load_goodreads(path: Path):
+def load_goodreads(
+    path: Path,
+):
+    """
+    Load a Goodreads XLSX export.
+
+    IMPORTANT:
+    Only rows where:
+
+        Exclusive Shelf == to-read
+
+    are imported.
+    """
+
     if not path.exists():
-        raise FileNotFoundError(f"File not found:\n{path}")
+        raise FileNotFoundError(
+            f"File not found:\n{path}"
+        )
 
     if path.suffix.lower() != ".xlsx":
-        raise ValueError("Please select a Goodreads .xlsx export.")
+        raise ValueError(
+            "Please select a Goodreads .xlsx export."
+        )
 
     workbook = load_workbook(
         filename=path,
@@ -368,25 +520,61 @@ def load_goodreads(path: Path):
 
     try:
         worksheet = workbook.active
-        rows = worksheet.iter_rows(values_only=True)
+
+        rows = worksheet.iter_rows(
+            values_only=True
+        )
 
         try:
-            headers = list(next(rows))
+            header_values = next(rows)
         except StopIteration:
-            raise ValueError("The Excel file is empty.")
+            raise ValueError(
+                "The Excel file is empty."
+            )
 
-        shelf_header = find_header(headers, "Exclusive Shelf")
-        title_header = find_header(headers, "Title")
+        headers = list(
+            header_values
+        )
+
+        # ----------------------------------------------------
+        # Required columns
+        # ----------------------------------------------------
+
+        shelf_header = find_header(
+            headers,
+            "Exclusive Shelf",
+        )
+
+        title_header = find_header(
+            headers,
+            "Title",
+        )
 
         if shelf_header is None:
             raise ValueError(
-                'Could not find the "Exclusive Shelf" column.'
+                'Could not find the "Exclusive Shelf" '
+                "column in this Goodreads export."
             )
 
         if title_header is None:
             raise ValueError(
-                'Could not find the "Title" column.'
+                'Could not find the "Title" '
+                "column in this Goodreads export."
             )
+
+        # ----------------------------------------------------
+        # AUTHOR FIX
+        #
+        # Your Goodreads export uses:
+        #
+        #     Author l-f
+        #
+        # rather than:
+        #
+        #     Author
+        #
+        # We explicitly support both.
+        # ----------------------------------------------------
 
         author_header = find_first_header(
             headers,
@@ -398,65 +586,122 @@ def load_goodreads(path: Path):
             ],
         )
 
-        header_index = {
-            header: index
-            for index, header in enumerate(headers)
-            if header is not None
-        }
+        # ----------------------------------------------------
+        # Build column index
+        # ----------------------------------------------------
 
-        def get_value(values, header):
-            if header is None:
-                return ""
+        header_index = {}
 
-            index = header_index.get(header)
+        for index, header in enumerate(
+            headers
+        ):
+            if header is not None:
+                header_index[header] = index
 
-            if index is None or index >= len(values):
-                return ""
+        shelf_index = header_index[
+            shelf_header
+        ]
 
-            return normalize(values[index])
+        title_index = header_index[
+            title_header
+        ]
 
-        pages_header = find_header(headers, "Pages")
-        year_header = find_header(headers, "Year Published")
+        author_index = None
+
+        if author_header is not None:
+            author_index = header_index[
+                author_header
+            ]
+
+        # Optional columns.
+        pages_header = find_header(
+            headers,
+            "Pages",
+        )
+
+        year_header = find_header(
+            headers,
+            "Year Published",
+        )
+
         original_year_header = find_header(
             headers,
             "Original Publication Year",
         )
+
         description_header = find_header(
             headers,
             "Description",
         )
+
         my_rating_header = find_header(
             headers,
             "My Rating",
         )
-        isbn_header = find_header(headers, "ISBN")
+
+        isbn_header = find_header(
+            headers,
+            "ISBN",
+        )
+
         book_id_header = find_header(
             headers,
             "Book Id - Goodreads",
         )
 
-        first_name_header = find_header(
-            headers,
-            "Author First Name",
-        )
-        last_name_header = find_header(
-            headers,
-            "Author Last Name",
-        )
+        # ----------------------------------------------------
+        # Helper for optional values
+        # ----------------------------------------------------
+
+        def get_value(
+            values,
+            header,
+        ):
+            if header is None:
+                return ""
+
+            index = header_index.get(
+                header
+            )
+
+            if index is None:
+                return ""
+
+            if index >= len(values):
+                return ""
+
+            return normalize(
+                values[index]
+            )
+
+        # ----------------------------------------------------
+        # Import rows
+        # ----------------------------------------------------
 
         books = []
+
         excel_row_number = 2
 
         for raw_values in rows:
-            values = list(raw_values)
+            values = list(
+                raw_values
+            )
 
-            while len(values) < len(headers):
+            # Make sure every row has enough
+            # cells for all headers.
+            while len(values) < len(
+                headers
+            ):
                 values.append(None)
 
             shelf = get_value(
                 values,
                 shelf_header,
             ).lower()
+
+            # ------------------------------------------------
+            # THIS IS THE FILTER YOU ASKED FOR
+            # ------------------------------------------------
 
             if shelf != "to-read":
                 excel_row_number += 1
@@ -471,15 +716,34 @@ def load_goodreads(path: Path):
                 excel_row_number += 1
                 continue
 
+            # ------------------------------------------------
+            # AUTHOR
+            # ------------------------------------------------
+
             author = ""
 
-            if author_header is not None:
-                author = get_value(
-                    values,
-                    author_header,
+            if author_index is not None:
+                author = normalize(
+                    values[author_index]
                 )
 
+            # Support Goodreads exports which might
+            # instead contain separate author fields.
             if not author:
+                first_name_header = (
+                    find_header(
+                        headers,
+                        "Author First Name",
+                    )
+                )
+
+                last_name_header = (
+                    find_header(
+                        headers,
+                        "Author Last Name",
+                    )
+                )
+
                 first_name = get_value(
                     values,
                     first_name_header,
@@ -492,9 +756,16 @@ def load_goodreads(path: Path):
 
                 author = " ".join(
                     part
-                    for part in (first_name, last_name)
+                    for part in [
+                        first_name,
+                        last_name,
+                    ]
                     if part
                 )
+
+            # ------------------------------------------------
+            # Goodreads ID
+            # ------------------------------------------------
 
             goodreads_id = get_value(
                 values,
@@ -502,13 +773,26 @@ def load_goodreads(path: Path):
             )
 
             if goodreads_id:
-                book_id = "goodreads:" + goodreads_id
+                book_id = (
+                    "goodreads:"
+                    + goodreads_id
+                )
             else:
-                book_id = "row:" + str(excel_row_number)
+                # Fallback to source row.
+                book_id = (
+                    "row:"
+                    + str(excel_row_number)
+                )
+
+            # ------------------------------------------------
+            # Preserve original row
+            # ------------------------------------------------
 
             original = {}
 
-            for index, header in enumerate(headers):
+            for index, header in enumerate(
+                headers
+            ):
                 if header is None:
                     continue
 
@@ -518,36 +802,52 @@ def load_goodreads(path: Path):
                     else None
                 )
 
-                if isinstance(value, datetime):
+                # Convert dates/datetimes into
+                # JSON-safe strings.
+                if isinstance(
+                    value,
+                    datetime,
+                ):
                     value = value.isoformat()
 
-                original[str(header)] = value
+                original[
+                    str(header)
+                ] = value
 
-            books.append(
-                Book(
-                    id=book_id,
-                    title=title,
-                    author=author,
-                    pages=get_value(values, pages_header),
-                    year=get_value(values, year_header),
-                    publication_year=get_value(
-                        values,
-                        original_year_header,
-                    ),
-                    description=get_value(
-                        values,
-                        description_header,
-                    ),
-                    my_rating=get_value(
-                        values,
-                        my_rating_header,
-                    ),
-                    isbn=get_value(values, isbn_header),
-                    book_id=goodreads_id,
-                    original_row=excel_row_number,
-                    original=original,
-                )
+            book = Book(
+                id=book_id,
+                title=title,
+                author=author,
+                pages=get_value(
+                    values,
+                    pages_header,
+                ),
+                year=get_value(
+                    values,
+                    year_header,
+                ),
+                publication_year=get_value(
+                    values,
+                    original_year_header,
+                ),
+                description=get_value(
+                    values,
+                    description_header,
+                ),
+                my_rating=get_value(
+                    values,
+                    my_rating_header,
+                ),
+                isbn=get_value(
+                    values,
+                    isbn_header,
+                ),
+                book_id=goodreads_id,
+                original_row=excel_row_number,
+                original=original,
             )
+
+            books.append(book)
 
             excel_row_number += 1
 
@@ -565,7 +865,9 @@ class RankingEngine:
     def __init__(
         self,
         books: list[Book],
-        target_comparisons: int = DEFAULT_TARGET_COMPARISONS,
+        target_comparisons: int = (
+            DEFAULT_TARGET_COMPARISONS
+        ),
     ):
         self.books = books
 
@@ -584,6 +886,10 @@ class RankingEngine:
 
         self.comparisons = []
 
+    # --------------------------------------------------------
+    # Helpers
+    # --------------------------------------------------------
+
     def book_map(self):
         return {
             book.id: book
@@ -591,8 +897,15 @@ class RankingEngine:
         }
 
     @staticmethod
-    def pair_key(first: str, second: str) -> str:
-        return "|".join(sorted([first, second]))
+    def pair_key(
+        first: str,
+        second: str,
+    ) -> str:
+        return "|".join(
+            sorted(
+                [first, second]
+            )
+        )
 
     def played_pairs(self):
         return {
@@ -610,13 +923,20 @@ class RankingEngine:
         }
 
         for match in self.comparisons:
-            if match["left"] in counts:
-                counts[match["left"]] += 1
+            left = match["left"]
+            right = match["right"]
 
-            if match["right"] in counts:
-                counts[match["right"]] += 1
+            if left in counts:
+                counts[left] += 1
+
+            if right in counts:
+                counts[right] += 1
 
         return counts
+
+    # --------------------------------------------------------
+    # Apply a comparison
+    # --------------------------------------------------------
 
     def apply_match(
         self,
@@ -625,23 +945,43 @@ class RankingEngine:
         result: str,
     ):
         if left_id not in self.ratings:
-            raise ValueError("Unknown left book.")
+            raise ValueError(
+                "Unknown left book."
+            )
 
         if right_id not in self.ratings:
-            raise ValueError("Unknown right book.")
+            raise ValueError(
+                "Unknown right book."
+            )
 
-        if result not in ("left", "right", "tie"):
-            raise ValueError("Invalid comparison result.")
+        if result not in (
+            "left",
+            "right",
+            "tie",
+        ):
+            raise ValueError(
+                "Invalid comparison result."
+            )
 
-        old_left = copy.deepcopy(self.ratings[left_id])
-        old_right = copy.deepcopy(self.ratings[right_id])
+        old_left = copy.deepcopy(
+            self.ratings[left_id]
+        )
+
+        old_right = copy.deepcopy(
+            self.ratings[right_id]
+        )
 
         if result == "left":
-            left_score, right_score = 1.0, 0.0
+            left_score = 1.0
+            right_score = 0.0
+
         elif result == "right":
-            left_score, right_score = 0.0, 1.0
+            left_score = 0.0
+            right_score = 1.0
+
         else:
-            left_score, right_score = 0.5, 0.5
+            left_score = 0.5
+            right_score = 0.5
 
         new_left = glicko_update(
             old_left,
@@ -655,8 +995,14 @@ class RankingEngine:
             [right_score],
         )
 
-        new_left.comparisons = old_left.comparisons + 1
-        new_right.comparisons = old_right.comparisons + 1
+        # Preserve match statistics.
+        new_left.comparisons = (
+            old_left.comparisons + 1
+        )
+
+        new_right.comparisons = (
+            old_right.comparisons + 1
+        )
 
         new_left.wins = old_left.wins
         new_left.losses = old_left.losses
@@ -678,20 +1024,29 @@ class RankingEngine:
             new_left.ties += 1
             new_right.ties += 1
 
-        self.ratings[left_id] = new_left
-        self.ratings[right_id] = new_right
-
-        self.comparisons.append(
-            {
-                "left": left_id,
-                "right": right_id,
-                "result": result,
-                "timestamp": now_iso(),
-            }
+        self.ratings[left_id] = (
+            new_left
         )
 
+        self.ratings[right_id] = (
+            new_right
+        )
+
+        self.comparisons.append({
+            "left": left_id,
+            "right": right_id,
+            "result": result,
+            "timestamp": now_iso(),
+        })
+
+    # --------------------------------------------------------
+    # Rebuild
+    # --------------------------------------------------------
+
     def rebuild_from_history(self):
-        history = copy.deepcopy(self.comparisons)
+        history = copy.deepcopy(
+            self.comparisons
+        )
 
         self.ratings = {
             book.id: Rating()
@@ -708,67 +1063,80 @@ class RankingEngine:
                     match["result"],
                 )
             except Exception:
+                # Ignore corrupted historical matches
+                # rather than destroying the entire session.
                 continue
+
+    # --------------------------------------------------------
+    # Undo
+    # --------------------------------------------------------
 
     def undo(self) -> bool:
         if not self.comparisons:
             return False
 
         self.comparisons.pop()
+
         self.rebuild_from_history()
 
         return True
 
+    # --------------------------------------------------------
+    # Choose next pair
+    # --------------------------------------------------------
+
     def choose_pair(self):
-        """
-        Efficient pair selection.
-
-        Important change:
-        Instead of repeatedly comparing random books, this tries to
-        compare books that are close in rating and still need evidence.
-
-        This is much more useful for a 500+ book library.
-        """
-
         if len(self.books) < 2:
             return None
 
         played = self.played_pairs()
         counts = self.comparison_counts()
 
-        unfinished = [
-            book
-            for book in self.books
-            if counts[book.id] < self.target_comparisons
-        ]
+        # Find books which still need evidence.
+        needs = []
 
-        if not unfinished:
-            return None
+        for book in self.books:
+            rating = self.ratings[
+                book.id
+            ]
 
-        # Pick books with the fewest comparisons first.
-        # This prevents some books from being neglected.
-        minimum_count = min(
-            counts[book.id]
-            for book in unfinished
-        )
+            remaining = max(
+                0,
+                self.target_comparisons
+                - counts[book.id],
+            )
 
-        pool = [
-            book
-            for book in unfinished
-            if counts[book.id] <= minimum_count + 1
-        ]
+            # RD is deliberately included because a book
+            # with high uncertainty deserves more comparisons.
+            weight = (
+                1.0
+                + remaining * 5.0
+                + rating.rd * 0.03
+            )
 
-        # RD gives extra priority to uncertain books.
+            needs.append(
+                (
+                    book,
+                    weight,
+                )
+            )
+
+        # Random weighted primary book.
         primary = random.choices(
-            pool,
+            [
+                item[0]
+                for item in needs
+            ],
             weights=[
-                1.0 + self.ratings[b.id].rd * 0.015
-                for b in pool
+                item[1]
+                for item in needs
             ],
             k=1,
         )[0]
 
-        primary_rating = self.ratings[primary.id]
+        primary_rating = self.ratings[
+            primary.id
+        ]
 
         candidates = []
 
@@ -777,21 +1145,27 @@ class RankingEngine:
                 continue
 
             if (
-                self.pair_key(primary.id, book.id)
+                self.pair_key(
+                    primary.id,
+                    book.id,
+                )
                 in played
             ):
                 continue
 
-            rating = self.ratings[book.id]
+            rating = self.ratings[
+                book.id
+            ]
 
-            distance = abs(
+            rating_distance = abs(
                 primary_rating.rating
                 - rating.rating
             )
 
-            # Very strong preference for similarly ranked books.
+            # Prefer reasonably close books.
             similarity = math.exp(
-                -distance / 180.0
+                -rating_distance
+                / 250.0
             )
 
             uncertainty = (
@@ -807,8 +1181,8 @@ class RankingEngine:
 
             score = (
                 similarity * 100.0
-                + uncertainty * 0.45
-                + remaining * 12.0
+                + uncertainty * 0.5
+                + remaining * 8.0
             )
 
             candidates.append(
@@ -820,37 +1194,55 @@ class RankingEngine:
 
         if candidates:
             candidates.sort(
-                key=lambda x: x[0],
+                key=lambda item: item[0],
                 reverse=True,
             )
 
-            # Small randomization prevents the same books
-            # from getting stuck in deterministic loops.
             shortlist = candidates[
-                :min(8, len(candidates))
+                : min(
+                    5,
+                    len(candidates),
+                )
             ]
 
-            opponent = random.choice(shortlist)[1]
+            opponent = random.choice(
+                shortlist
+            )[1]
 
-            return primary.id, opponent.id
+            return (
+                primary.id,
+                opponent.id,
+            )
 
-        # Final fallback.
+        # Final fallback: highest combined uncertainty.
         fallback = []
 
-        for i in range(len(self.books)):
-            for j in range(i + 1, len(self.books)):
+        for i in range(
+            len(self.books)
+        ):
+            for j in range(
+                i + 1,
+                len(self.books),
+            ):
                 left = self.books[i]
                 right = self.books[j]
 
                 if (
-                    self.pair_key(left.id, right.id)
+                    self.pair_key(
+                        left.id,
+                        right.id,
+                    )
                     in played
                 ):
                     continue
 
                 score = (
-                    self.ratings[left.id].rd
-                    + self.ratings[right.id].rd
+                    self.ratings[
+                        left.id
+                    ].rd
+                    + self.ratings[
+                        right.id
+                    ].rd
                 )
 
                 fallback.append(
@@ -862,24 +1254,32 @@ class RankingEngine:
                 )
 
         if fallback:
-            fallback.sort(reverse=True)
+            fallback.sort(
+                reverse=True
+            )
 
-            _, left, right = fallback[0]
+            _, left, right = (
+                fallback[0]
+            )
 
             return left, right
 
         return None
 
+    # --------------------------------------------------------
+    # Ranking
+    # --------------------------------------------------------
+
     def ranking(self):
         result = []
 
         for book in self.books:
-            result.append(
-                {
-                    "book": book,
-                    "rating": self.ratings[book.id],
-                }
-            )
+            result.append({
+                "book": book,
+                "rating": self.ratings[
+                    book.id
+                ],
+            })
 
         result.sort(
             key=lambda item: (
@@ -891,27 +1291,39 @@ class RankingEngine:
 
         return result
 
+    # --------------------------------------------------------
+    # Progress
+    # --------------------------------------------------------
+
     def progress(self):
         if not self.books:
             return 0.0
 
-        counts = self.comparison_counts()
-
-        total = sum(
-            min(
-                counts[book.id] / self.target_comparisons,
-                1.0,
-            )
-            for book in self.books
+        counts = (
+            self.comparison_counts()
         )
 
-        return total / len(self.books)
+        total = 0.0
+
+        for book in self.books:
+            total += min(
+                counts[book.id]
+                / self.target_comparisons,
+                1.0,
+            )
+
+        return total / len(
+            self.books
+        )
 
     def is_finished(self):
-        counts = self.comparison_counts()
+        counts = (
+            self.comparison_counts()
+        )
 
         return all(
-            counts[book.id] >= self.target_comparisons
+            counts[book.id]
+            >= self.target_comparisons
             for book in self.books
         )
 
@@ -921,8 +1333,13 @@ class RankingEngine:
 # ============================================================
 
 class StateStore:
-    def __init__(self, source_file: Path):
-        self.source_file = source_file
+    def __init__(
+        self,
+        source_file: Path,
+    ):
+        self.source_file = (
+            source_file
+        )
 
         self.directory = (
             source_file.parent
@@ -937,14 +1354,22 @@ class StateStore:
         self.path = (
             self.directory
             / (
-                safe_filename(source_file.stem)
+                safe_filename(
+                    source_file.stem
+                )
                 + ".json"
             )
         )
 
-    def save(self, engine: RankingEngine):
+    def exists(self):
+        return self.path.exists()
+
+    def save(
+        self,
+        engine: RankingEngine,
+    ):
         data = {
-            "version": 3,
+            "version": 2,
             "source_file": str(
                 self.source_file.resolve()
             ),
@@ -955,11 +1380,15 @@ class StateStore:
                 asdict(book)
                 for book in engine.books
             ],
-            "comparisons": engine.comparisons,
+            "comparisons": (
+                engine.comparisons
+            ),
             "saved_at": now_iso(),
         }
 
-        temporary = self.path.with_suffix(".tmp")
+        temporary = self.path.with_suffix(
+            ".tmp"
+        )
 
         with temporary.open(
             "w",
@@ -972,7 +1401,9 @@ class StateStore:
                 ensure_ascii=False,
             )
 
-        temporary.replace(self.path)
+        temporary.replace(
+            self.path
+        )
 
     def load(
         self,
@@ -988,9 +1419,14 @@ class StateStore:
             ) as file:
                 data = json.load(file)
 
+            saved_books = data.get(
+                "books",
+                [],
+            )
+
             saved_ids = {
                 book.get("id")
-                for book in data.get("books", [])
+                for book in saved_books
             }
 
             current_ids = {
@@ -998,6 +1434,8 @@ class StateStore:
                 for book in books
             }
 
+            # The saved ranking must belong to the same
+            # to-read list.
             if saved_ids != current_ids:
                 return None
 
@@ -1013,8 +1451,13 @@ class StateStore:
                 target,
             )
 
-            engine.comparisons = copy.deepcopy(
-                data.get("comparisons", [])
+            history = data.get(
+                "comparisons",
+                [],
+            )
+
+            engine.comparisons = (
+                copy.deepcopy(history)
             )
 
             engine.rebuild_from_history()
@@ -1033,17 +1476,31 @@ def export_results(
     source_file: Path,
     engine: RankingEngine,
 ):
+    """
+    Create:
+
+        originalname_ranked.xlsx
+
+    The original Goodreads workbook is not modified.
+    """
+
     workbook = load_workbook(
         filename=source_file
     )
 
     try:
+        # ----------------------------------------------------
+        # Ranking sheet
+        # ----------------------------------------------------
+
         if "Ranking" in workbook.sheetnames:
             del workbook["Ranking"]
 
-        ranking_sheet = workbook.create_sheet(
-            "Ranking",
-            0,
+        ranking_sheet = (
+            workbook.create_sheet(
+                "Ranking",
+                0,
+            )
         )
 
         headers = [
@@ -1059,7 +1516,9 @@ def export_results(
             "Goodreads Book Id",
         ]
 
-        ranking_sheet.append(headers)
+        ranking_sheet.append(
+            headers
+        )
 
         for rank, item in enumerate(
             engine.ranking(),
@@ -1068,20 +1527,28 @@ def export_results(
             book = item["book"]
             rating = item["rating"]
 
-            ranking_sheet.append(
-                [
-                    rank,
-                    book.title,
-                    book.author,
-                    round(rating.rating, 2),
-                    round(rating.rd, 2),
-                    rating.comparisons,
-                    rating.wins,
-                    rating.losses,
-                    rating.ties,
-                    book.book_id,
-                ]
-            )
+            ranking_sheet.append([
+                rank,
+                book.title,
+                book.author,
+                round(
+                    rating.rating,
+                    2,
+                ),
+                round(
+                    rating.rd,
+                    2,
+                ),
+                rating.comparisons,
+                rating.wins,
+                rating.losses,
+                rating.ties,
+                book.book_id,
+            ])
+
+        # ----------------------------------------------------
+        # Styling
+        # ----------------------------------------------------
 
         header_fill = PatternFill(
             fill_type="solid",
@@ -1096,11 +1563,14 @@ def export_results(
         for cell in ranking_sheet[1]:
             cell.fill = header_fill
             cell.font = header_font
-            cell.alignment = Alignment(
-                vertical="center"
+            cell.alignment = (
+                Alignment(
+                    vertical="center"
+                )
             )
 
         ranking_sheet.freeze_panes = "A2"
+
         ranking_sheet.auto_filter.ref = (
             ranking_sheet.dimensions
         )
@@ -1130,50 +1600,60 @@ def export_results(
         # Comparisons sheet
         # ----------------------------------------------------
 
-        if "Comparisons" in workbook.sheetnames:
+        if (
+            "Comparisons"
+            in workbook.sheetnames
+        ):
             del workbook["Comparisons"]
 
-        comparison_sheet = workbook.create_sheet(
-            "Comparisons"
+        comparison_sheet = (
+            workbook.create_sheet(
+                "Comparisons"
+            )
         )
 
-        comparison_sheet.append(
-            [
-                "Left Book",
-                "Left Author",
-                "Right Book",
-                "Right Author",
-                "Result",
-                "Timestamp",
-            ]
-        )
+        comparison_sheet.append([
+            "Left Book",
+            "Left Author",
+            "Right Book",
+            "Right Author",
+            "Result",
+            "Timestamp",
+        ])
 
-        book_map = engine.book_map()
+        book_map = (
+            engine.book_map()
+        )
 
         for match in engine.comparisons:
-            left = book_map.get(match["left"])
-            right = book_map.get(match["right"])
+            left = book_map.get(
+                match["left"]
+            )
+
+            right = book_map.get(
+                match["right"]
+            )
 
             if left is None or right is None:
                 continue
 
             if match["result"] == "left":
                 result = left.title
+
             elif match["result"] == "right":
                 result = right.title
+
             else:
                 result = "Tie"
 
-            comparison_sheet.append(
-                [
-                    left.title,
-                    left.author,
-                    right.title,
-                    right.author,
-                    result,
-                    match["timestamp"],
-                ]
-            )
+            comparison_sheet.append([
+                left.title,
+                left.author,
+                right.title,
+                right.author,
+                result,
+                match["timestamp"],
+            ])
 
         for cell in comparison_sheet[1]:
             cell.fill = header_fill
@@ -1190,17 +1670,27 @@ def export_results(
             "F": 22,
         }
 
-        for column, width in comparison_widths.items():
+        for column, width in (
+            comparison_widths.items()
+        ):
             comparison_sheet.column_dimensions[
                 column
             ].width = width
 
         # ----------------------------------------------------
-        # Add ranking data to original sheet
+        # Add ranking columns to original sheet
         # ----------------------------------------------------
 
-        original_sheet = None
+        original_sheet = (
+            workbook[
+                workbook.sheetnames[
+                    -1
+                ]
+            ]
+        )
 
+        # Find the original Goodreads sheet.
+        # Usually it is the first non-generated sheet.
         for sheet in workbook.worksheets:
             if sheet.title not in (
                 "Ranking",
@@ -1208,9 +1698,6 @@ def export_results(
             ):
                 original_sheet = sheet
                 break
-
-        if original_sheet is None:
-            original_sheet = workbook.active
 
         existing_headers = [
             cell.value
@@ -1227,45 +1714,69 @@ def export_results(
             "Ties",
         ]
 
-        start_column = len(existing_headers) + 1
+        start_column = (
+            len(existing_headers)
+            + 1
+        )
 
-        for offset, header in enumerate(extra_headers):
-            cell = original_sheet.cell(
-                row=1,
-                column=start_column + offset,
+        for offset, header in enumerate(
+            extra_headers
+        ):
+            cell = (
+                original_sheet.cell(
+                    row=1,
+                    column=(
+                        start_column
+                        + offset
+                    ),
+                )
             )
 
             cell.value = header
             cell.fill = header_fill
             cell.font = header_font
 
+        # Map book IDs to ranking information.
         ranked = {}
 
         for rank, item in enumerate(
             engine.ranking(),
             start=1,
         ):
-            ranked[item["book"].id] = (
+            ranked[
+                item["book"].id
+            ] = (
                 rank,
                 item["rating"],
             )
 
+        # Locate Goodreads Book Id column.
         book_id_column = None
 
         for index, header in enumerate(
             existing_headers,
             start=1,
         ):
-            if normalize_header(header) == normalize_header(
-                "Book Id - Goodreads"
+            if (
+                normalize_header(
+                    header
+                )
+                == normalize_header(
+                    "Book Id - Goodreads"
+                )
             ):
                 book_id_column = index
                 break
 
+        # Map original source rows.
         books_by_row = {
             book.original_row: book
             for book in engine.books
         }
+
+        # ----------------------------------------------------
+        # Populate ranking data
+        # ----------------------------------------------------
 
         for row in range(
             2,
@@ -1273,6 +1784,7 @@ def export_results(
         ):
             book = None
 
+            # Best match: Goodreads ID.
             if book_id_column is not None:
                 goodreads_id = normalize(
                     original_sheet.cell(
@@ -1287,50 +1799,81 @@ def export_results(
                         + goodreads_id
                     )
 
-                    for candidate in engine.books:
-                        if candidate.id == candidate_id:
+                    for candidate in (
+                        engine.books
+                    ):
+                        if (
+                            candidate.id
+                            == candidate_id
+                        ):
                             book = candidate
                             break
 
+            # Fallback: source row.
             if book is None:
-                book = books_by_row.get(row)
+                book = books_by_row.get(
+                    row
+                )
 
             if book is None:
                 continue
 
-            ranking_data = ranked.get(book.id)
+            ranking_data = ranked.get(
+                book.id
+            )
 
             if ranking_data is None:
                 continue
 
-            rank, rating = ranking_data
+            rank, rating = (
+                ranking_data
+            )
 
             values = [
                 rank,
-                round(rating.rating, 2),
-                round(rating.rd, 2),
+                round(
+                    rating.rating,
+                    2,
+                ),
+                round(
+                    rating.rd,
+                    2,
+                ),
                 rating.comparisons,
                 rating.wins,
                 rating.losses,
                 rating.ties,
             ]
 
-            for offset, value in enumerate(values):
+            for offset, value in enumerate(
+                values
+            ):
                 original_sheet.cell(
                     row=row,
-                    column=start_column + offset,
+                    column=(
+                        start_column
+                        + offset
+                    ),
                     value=value,
                 )
+
+        # ----------------------------------------------------
+        # Save
+        # ----------------------------------------------------
 
         output_path = (
             source_file.parent
             / (
-                safe_filename(source_file.stem)
+                safe_filename(
+                    source_file.stem
+                )
                 + "_ranked.xlsx"
             )
         )
 
-        workbook.save(output_path)
+        workbook.save(
+            output_path
+        )
 
         return output_path
 
@@ -1343,20 +1886,23 @@ def export_results(
 # ============================================================
 
 class RankerApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(
+        self,
+        root: tk.Tk,
+    ):
         self.root = root
 
         self.root.title(
-            f"{APP_NAME} {APP_VERSION}"
+            APP_NAME
         )
 
         self.root.geometry(
-            "1220x790"
+            "1180x760"
         )
 
         self.root.minsize(
-            980,
-            680,
+            950,
+            650,
         )
 
         self.engine = None
@@ -1370,25 +1916,46 @@ class RankerApp:
 
         self.status_var = tk.StringVar(
             value=(
-                "Open your Goodreads Excel export to begin."
+                "Open your Goodreads "
+                "Excel export to begin."
             )
         )
 
-        self.progress_var = tk.DoubleVar(
-            value=0.0
+        self.progress_var = (
+            tk.DoubleVar(
+                value=0.0
+            )
         )
 
-        self.stats_var = tk.StringVar(
-            value=""
+        self.stats_var = (
+            tk.StringVar(
+                value=""
+            )
         )
 
-        self.left_title_var = tk.StringVar()
-        self.left_author_var = tk.StringVar()
-        self.left_meta_var = tk.StringVar()
+        self.left_title_var = (
+            tk.StringVar()
+        )
 
-        self.right_title_var = tk.StringVar()
-        self.right_author_var = tk.StringVar()
-        self.right_meta_var = tk.StringVar()
+        self.left_author_var = (
+            tk.StringVar()
+        )
+
+        self.left_meta_var = (
+            tk.StringVar()
+        )
+
+        self.right_title_var = (
+            tk.StringVar()
+        )
+
+        self.right_author_var = (
+            tk.StringVar()
+        )
+
+        self.right_meta_var = (
+            tk.StringVar()
+        )
 
         self.build_styles()
         self.build_menu()
@@ -1408,46 +1975,63 @@ class RankerApp:
         style = ttk.Style()
 
         try:
-            style.theme_use("vista")
+            style.theme_use(
+                "vista"
+            )
         except tk.TclError:
             pass
 
         style.configure(
             "Title.TLabel",
-            font=("Segoe UI", 23, "bold"),
+            font=(
+                "Segoe UI",
+                23,
+                "bold",
+            ),
         )
 
         style.configure(
             "BookTitle.TLabel",
-            font=("Segoe UI", 18, "bold"),
+            font=(
+                "Segoe UI",
+                18,
+                "bold",
+            ),
         )
 
         style.configure(
             "BookAuthor.TLabel",
-            font=("Segoe UI", 12),
+            font=(
+                "Segoe UI",
+                12,
+            ),
         )
 
         style.configure(
             "BookMeta.TLabel",
-            font=("Segoe UI", 10),
+            font=(
+                "Segoe UI",
+                10,
+            ),
             foreground="#666666",
         )
 
         style.configure(
             "Choice.TButton",
-            font=("Segoe UI", 12, "bold"),
+            font=(
+                "Segoe UI",
+                12,
+                "bold",
+            ),
             padding=14,
         )
 
         style.configure(
-            "Preset.TButton",
-            font=("Segoe UI", 9, "bold"),
-            padding=(8, 5),
-        )
-
-        style.configure(
             "Secondary.TButton",
-            font=("Segoe UI", 10),
+            font=(
+                "Segoe UI",
+                10,
+            ),
             padding=8,
         )
 
@@ -1456,7 +2040,9 @@ class RankerApp:
     # --------------------------------------------------------
 
     def build_menu(self):
-        menu = tk.Menu(self.root)
+        menu = tk.Menu(
+            self.root
+        )
 
         file_menu = tk.Menu(
             menu,
@@ -1528,7 +2114,9 @@ class RankerApp:
             menu=help_menu,
         )
 
-        self.root.config(menu=menu)
+        self.root.config(
+            menu=menu
+        )
 
     # --------------------------------------------------------
     # Main UI
@@ -1545,26 +2133,30 @@ class RankerApp:
             expand=True,
         )
 
-        # ----------------------------------------------------
         # Header
-        # ----------------------------------------------------
-
-        header = ttk.Frame(outer)
+        header = ttk.Frame(
+            outer
+        )
 
         header.pack(
             fill="x",
-            pady=(0, 10),
+            pady=(0, 15),
         )
 
         ttk.Label(
             header,
-            text="📚 Goodreads To-Read Ranker",
+            text=(
+                "📚 Goodreads "
+                "To-Read Ranker"
+            ),
             style="Title.TLabel",
         ).pack(
             side="left"
         )
 
-        controls = ttk.Frame(header)
+        controls = ttk.Frame(
+            header
+        )
 
         controls.pack(
             side="right"
@@ -1575,10 +2167,10 @@ class RankerApp:
             text="Comparisons/book:",
         ).pack(
             side="left",
-            padx=(0, 6),
+            padx=(0, 7),
         )
 
-        self.spinbox = ttk.Spinbox(
+        spinbox = ttk.Spinbox(
             controls,
             from_=MIN_TARGET_COMPARISONS,
             to=MAX_TARGET_COMPARISONS,
@@ -1586,11 +2178,11 @@ class RankerApp:
             width=5,
         )
 
-        self.spinbox.pack(
+        spinbox.pack(
             side="left"
         )
 
-        self.spinbox.bind(
+        spinbox.bind(
             "<Return>",
             self.target_changed,
         )
@@ -1601,84 +2193,17 @@ class RankerApp:
             command=self.open_file,
         ).pack(
             side="left",
-            padx=(12, 0),
+            padx=(15, 0),
         )
 
-        # ----------------------------------------------------
-        # Speed presets
-        # ----------------------------------------------------
-
-        preset_frame = ttk.Frame(outer)
-
-        preset_frame.pack(
-            fill="x",
-            pady=(0, 12),
-        )
-
-        ttk.Label(
-            preset_frame,
-            text="Speed:",
-        ).pack(
-            side="left",
-            padx=(0, 7),
-        )
-
-        ttk.Button(
-            preset_frame,
-            text="⚡ Quick · 3",
-            style="Preset.TButton",
-            command=lambda: self.set_target(
-                QUICK_COMPARISONS
-            ),
-        ).pack(
-            side="left",
-            padx=2,
-        )
-
-        ttk.Button(
-            preset_frame,
-            text="Balanced · 6",
-            style="Preset.TButton",
-            command=lambda: self.set_target(
-                BALANCED_COMPARISONS
-            ),
-        ).pack(
-            side="left",
-            padx=2,
-        )
-
-        ttk.Button(
-            preset_frame,
-            text="Accurate · 12",
-            style="Preset.TButton",
-            command=lambda: self.set_target(
-                ACCURATE_COMPARISONS
-            ),
-        ).pack(
-            side="left",
-            padx=2,
-        )
-
-        ttk.Label(
-            preset_frame,
-            text=(
-                "  Quick is recommended for 500+ books."
-            ),
-            foreground="#666666",
-        ).pack(
-            side="left",
-            padx=(8, 0),
-        )
-
-        # ----------------------------------------------------
         # Status
-        # ----------------------------------------------------
-
-        status = ttk.Frame(outer)
+        status = ttk.Frame(
+            outer
+        )
 
         status.pack(
             fill="x",
-            pady=(0, 12),
+            pady=(0, 15),
         )
 
         ttk.Label(
@@ -1694,7 +2219,7 @@ class RankerApp:
             maximum=100,
         ).pack(
             fill="x",
-            pady=(7, 0),
+            pady=(8, 0),
         )
 
         ttk.Label(
@@ -1702,23 +2227,24 @@ class RankerApp:
             textvariable=self.stats_var,
         ).pack(
             anchor="w",
-            pady=(4, 0),
+            pady=(5, 0),
         )
 
-        # ----------------------------------------------------
         # Cards
-        # ----------------------------------------------------
-
-        choices = ttk.Frame(outer)
+        choices = ttk.Frame(
+            outer
+        )
 
         choices.pack(
             fill="both",
             expand=True,
         )
 
-        self.left_card = self.make_book_card(
-            choices,
-            "left",
+        self.left_card = (
+            self.make_book_card(
+                choices,
+                "left",
+            )
         )
 
         self.left_card.pack(
@@ -1738,19 +2264,27 @@ class RankerApp:
             fill="y",
         )
 
-        middle.pack_propagate(False)
+        middle.pack_propagate(
+            False
+        )
 
         ttk.Label(
             middle,
             text="VS",
-            font=("Segoe UI", 16, "bold"),
+            font=(
+                "Segoe UI",
+                16,
+                "bold",
+            ),
         ).pack(
             pady=(155, 10)
         )
 
-        self.right_card = self.make_book_card(
-            choices,
-            "right",
+        self.right_card = (
+            self.make_book_card(
+                choices,
+                "right",
+            )
         )
 
         self.right_card.pack(
@@ -1760,21 +2294,22 @@ class RankerApp:
             padx=(8, 0),
         )
 
-        # ----------------------------------------------------
         # Main buttons
-        # ----------------------------------------------------
-
-        buttons = ttk.Frame(outer)
+        buttons = ttk.Frame(
+            outer
+        )
 
         buttons.pack(
             fill="x",
-            pady=(12, 0),
+            pady=(15, 0),
         )
 
         self.left_button = ttk.Button(
             buttons,
-            text="←  Choose Left  [1]",
-            command=lambda: self.choose("left"),
+            text="←  Choose Left",
+            command=lambda: self.choose(
+                "left"
+            ),
             style="Choice.TButton",
         )
 
@@ -1787,8 +2322,10 @@ class RankerApp:
 
         self.tie_button = ttk.Button(
             buttons,
-            text="≈  Tie  [3]",
-            command=lambda: self.choose("tie"),
+            text="≈  Tie",
+            command=lambda: self.choose(
+                "tie"
+            ),
             style="Choice.TButton",
         )
 
@@ -1801,8 +2338,10 @@ class RankerApp:
 
         self.right_button = ttk.Button(
             buttons,
-            text="Choose Right  →  [2]",
-            command=lambda: self.choose("right"),
+            text="Choose Right  →",
+            command=lambda: self.choose(
+                "right"
+            ),
             style="Choice.TButton",
         )
 
@@ -1813,20 +2352,19 @@ class RankerApp:
             padx=(5, 0),
         )
 
-        # ----------------------------------------------------
         # Bottom controls
-        # ----------------------------------------------------
-
-        bottom = ttk.Frame(outer)
+        bottom = ttk.Frame(
+            outer
+        )
 
         bottom.pack(
             fill="x",
-            pady=(10, 0),
+            pady=(12, 0),
         )
 
         ttk.Button(
             bottom,
-            text="Undo [U]",
+            text="Undo",
             command=self.undo,
             style="Secondary.TButton",
         ).pack(
@@ -1835,24 +2373,12 @@ class RankerApp:
 
         ttk.Button(
             bottom,
-            text="Skip [4]",
+            text="Skip",
             command=self.skip,
             style="Secondary.TButton",
         ).pack(
             side="left",
             padx=7,
-        )
-
-        ttk.Label(
-            bottom,
-            text=(
-                "Keyboard: 1 = left   2 = right   "
-                "3 = tie   4 = skip"
-            ),
-            foreground="#666666",
-        ).pack(
-            side="left",
-            padx=12,
         )
 
         ttk.Button(
@@ -1878,7 +2404,11 @@ class RankerApp:
     # Book card
     # --------------------------------------------------------
 
-    def make_book_card(self, parent, side):
+    def make_book_card(
+        self,
+        parent,
+        side,
+    ):
         frame = tk.Frame(
             parent,
             bg="#F6F7F9",
@@ -1897,13 +2427,30 @@ class RankerApp:
         )
 
         if side == "left":
-            title_var = self.left_title_var
-            author_var = self.left_author_var
-            meta_var = self.left_meta_var
+            title_var = (
+                self.left_title_var
+            )
+
+            author_var = (
+                self.left_author_var
+            )
+
+            meta_var = (
+                self.left_meta_var
+            )
+
         else:
-            title_var = self.right_title_var
-            author_var = self.right_author_var
-            meta_var = self.right_meta_var
+            title_var = (
+                self.right_title_var
+            )
+
+            author_var = (
+                self.right_author_var
+            )
+
+            meta_var = (
+                self.right_meta_var
+            )
 
         ttk.Label(
             content,
@@ -1944,7 +2491,10 @@ class RankerApp:
             borderwidth=0,
             bg="#F6F7F9",
             fg="#444444",
-            font=("Segoe UI", 10),
+            font=(
+                "Segoe UI",
+                10,
+            ),
             padx=5,
             pady=5,
         )
@@ -1959,9 +2509,13 @@ class RankerApp:
         )
 
         if side == "left":
-            self.left_description = description
+            self.left_description = (
+                description
+            )
         else:
-            self.right_description = description
+            self.right_description = (
+                description
+            )
 
         return frame
 
@@ -1970,45 +2524,32 @@ class RankerApp:
     # --------------------------------------------------------
 
     def bind_keys(self):
-        # Number keys are intentionally the fastest route.
-        self.root.bind(
-            "<KeyPress-1>",
-            lambda event: self.choose("left"),
-        )
-
-        self.root.bind(
-            "<KeyPress-2>",
-            lambda event: self.choose("right"),
-        )
-
-        self.root.bind(
-            "<KeyPress-3>",
-            lambda event: self.choose("tie"),
-        )
-
-        self.root.bind(
-            "<KeyPress-4>",
-            lambda event: self.skip(),
-        )
-
         self.root.bind(
             "<Left>",
-            lambda event: self.choose("left"),
+            lambda event: self.choose(
+                "left"
+            ),
         )
 
         self.root.bind(
             "<Right>",
-            lambda event: self.choose("right"),
+            lambda event: self.choose(
+                "right"
+            ),
         )
 
         self.root.bind(
             "<KeyPress-t>",
-            lambda event: self.choose("tie"),
+            lambda event: self.choose(
+                "tie"
+            ),
         )
 
         self.root.bind(
             "<KeyPress-T>",
-            lambda event: self.choose("tie"),
+            lambda event: self.choose(
+                "tie"
+            ),
         )
 
         self.root.bind(
@@ -2046,22 +2587,39 @@ class RankerApp:
     # --------------------------------------------------------
 
     def open_file(self):
-        path = filedialog.askopenfilename(
-            title="Open Goodreads Excel export",
-            filetypes=[
-                ("Excel files", "*.xlsx"),
-                ("All files", "*.*"),
-            ],
+        path = (
+            filedialog.askopenfilename(
+                title=(
+                    "Open Goodreads Excel export"
+                ),
+                filetypes=[
+                    (
+                        "Excel files",
+                        "*.xlsx",
+                    ),
+                    (
+                        "All files",
+                        "*.*",
+                    ),
+                ],
+            )
         )
 
         if not path:
             return
 
-        self.load_file(Path(path))
+        self.load_file(
+            Path(path)
+        )
 
-    def load_file(self, path: Path):
+    def load_file(
+        self,
+        path: Path,
+    ):
         try:
-            _, books = load_goodreads(path)
+            _, books = load_goodreads(
+                path
+            )
 
         except Exception as exc:
             messagebox.showerror(
@@ -2074,16 +2632,24 @@ class RankerApp:
             messagebox.showwarning(
                 "Not enough books",
                 (
-                    'I found fewer than two books where '
-                    '"Exclusive Shelf" is "to-read".'
+                    "I found fewer than two books "
+                    'where "Exclusive Shelf" is '
+                    '"to-read".'
                 ),
             )
             return
 
         self.source_file = path
-        self.state_store = StateStore(path)
 
-        existing = self.state_store.load(books)
+        self.state_store = (
+            StateStore(path)
+        )
+
+        existing = (
+            self.state_store.load(
+                books
+            )
+        )
 
         if existing is not None:
             resume = messagebox.askyesno(
@@ -2092,23 +2658,29 @@ class RankerApp:
                     f"I found a saved ranking for:\n\n"
                     f"{path.name}\n\n"
                     f"{len(existing.comparisons)} "
-                    f"comparisons have already been made.\n\n"
+                    f"comparisons have already been "
+                    f"made.\n\n"
                     f"Resume it?"
                 ),
             )
 
             if resume:
                 self.engine = existing
+
             else:
-                self.engine = RankingEngine(
-                    books,
-                    self.target_var.get(),
+                self.engine = (
+                    RankingEngine(
+                        books,
+                        self.target_var.get(),
+                    )
                 )
 
         else:
-            self.engine = RankingEngine(
-                books,
-                self.target_var.get(),
+            self.engine = (
+                RankingEngine(
+                    books,
+                    self.target_var.get(),
+                )
             )
 
         self.target_var.set(
@@ -2119,41 +2691,54 @@ class RankerApp:
 
         self.status_var.set(
             (
-                f"{len(books)} books on your to-read shelf "
-                f"· {path.name}"
+                f"{len(books)} books on your "
+                f"to-read shelf · {path.name}"
             )
         )
 
         self.refresh()
 
     # --------------------------------------------------------
-    # Speed presets
+    # Target comparisons
     # --------------------------------------------------------
 
-    def set_target(self, value: int):
-        self.target_var.set(value)
-        self.target_changed()
-
-    def target_changed(self, event=None):
+    def target_changed(
+        self,
+        event=None,
+    ):
         if self.engine is None:
             return
 
         try:
-            value = int(self.target_var.get())
+            value = int(
+                self.target_var.get()
+            )
+
         except ValueError:
-            value = DEFAULT_TARGET_COMPARISONS
+            value = (
+                DEFAULT_TARGET_COMPARISONS
+            )
 
         value = max(
             MIN_TARGET_COMPARISONS,
-            min(MAX_TARGET_COMPARISONS, value),
+            min(
+                MAX_TARGET_COMPARISONS,
+                value,
+            ),
         )
 
-        self.target_var.set(value)
-        self.engine.target_comparisons = value
+        self.target_var.set(
+            value
+        )
+
+        self.engine.target_comparisons = (
+            value
+        )
 
         self.save_state()
 
         self.current_pair = None
+
         self.refresh()
 
     # --------------------------------------------------------
@@ -2179,15 +2764,25 @@ class RankerApp:
                 "Ranking complete"
             )
 
-            self.left_author_var.set("")
-            self.left_meta_var.set("")
+            self.left_author_var.set(
+                ""
+            )
+
+            self.left_meta_var.set(
+                ""
+            )
 
             self.right_title_var.set(
                 "No more comparisons"
             )
 
-            self.right_author_var.set("")
-            self.right_meta_var.set("")
+            self.right_author_var.set(
+                ""
+            )
+
+            self.right_meta_var.set(
+                ""
+            )
 
             self.set_description(
                 self.left_description,
@@ -2199,33 +2794,31 @@ class RankerApp:
                 "",
             )
 
-            self.progress_var.set(100)
-
-            self.stats_var.set(
-                (
-                    f"{len(self.engine.comparisons)} decisions · "
-                    "evidence target complete"
-                )
-            )
-
-            self.status_var.set(
-                "Target reached for every book. Export when ready."
-            )
-
             return
 
         self.enable_choices()
 
-        left_id, right_id = self.current_pair
+        left_id, right_id = (
+            self.current_pair
+        )
 
-        book_map = self.engine.book_map()
+        book_map = (
+            self.engine.book_map()
+        )
 
-        left = book_map[left_id]
-        right = book_map[right_id]
+        left = book_map[
+            left_id
+        ]
+
+        right = book_map[
+            right_id
+        ]
 
         self.show_book(
             left,
-            self.engine.ratings[left.id],
+            self.engine.ratings[
+                left.id
+            ],
             self.left_title_var,
             self.left_author_var,
             self.left_meta_var,
@@ -2234,16 +2827,23 @@ class RankerApp:
 
         self.show_book(
             right,
-            self.engine.ratings[right.id],
+            self.engine.ratings[
+                right.id
+            ],
             self.right_title_var,
             self.right_author_var,
             self.right_meta_var,
             self.right_description,
         )
 
-        progress = self.engine.progress() * 100.0
+        progress = (
+            self.engine.progress()
+            * 100.0
+        )
 
-        self.progress_var.set(progress)
+        self.progress_var.set(
+            progress
+        )
 
         comparisons = len(
             self.engine.comparisons
@@ -2255,9 +2855,12 @@ class RankerApp:
                     self.engine.ratings[
                         book.id
                     ].comparisons
-                    for book in self.engine.books
+                    for book
+                    in self.engine.books
                 )
-                / len(self.engine.books)
+                / len(
+                    self.engine.books
+                )
             )
         else:
             average = 0
@@ -2289,7 +2892,9 @@ class RankerApp:
         ):
             return False
 
-        left, right = self.current_pair
+        left, right = (
+            self.current_pair
+        )
 
         return (
             left in self.engine.ratings
@@ -2309,8 +2914,11 @@ class RankerApp:
         meta_var,
         description_widget,
     ):
-        title_var.set(book.title)
+        title_var.set(
+            book.title
+        )
 
+        # This is the important author fix.
         author_var.set(
             book.author
             if book.author
@@ -2320,18 +2928,30 @@ class RankerApp:
         meta = []
 
         if book.pages:
-            meta.append(f"{book.pages} pages")
+            meta.append(
+                f"{book.pages} pages"
+            )
 
         if book.year:
-            meta.append(f"Published {book.year}")
+            meta.append(
+                f"Published {book.year}"
+            )
 
-        meta.append(f"Rating {rating.rating:.0f}")
-        meta.append(f"±{rating.rd:.0f}")
+        meta.append(
+            f"Rating {rating.rating:.0f}"
+        )
+
+        meta.append(
+            f"±{rating.rd:.0f}"
+        )
+
         meta.append(
             f"{rating.comparisons} comparisons"
         )
 
-        meta_var.set("  ·  ".join(meta))
+        meta_var.set(
+            "  ·  ".join(meta)
+        )
 
         description = (
             book.description
@@ -2344,8 +2964,14 @@ class RankerApp:
             description,
         )
 
-    def set_description(self, widget, text):
-        widget.configure(state="normal")
+    def set_description(
+        self,
+        widget,
+        text,
+    ):
+        widget.configure(
+            state="normal"
+        )
 
         widget.delete(
             "1.0",
@@ -2354,23 +2980,33 @@ class RankerApp:
 
         widget.insert(
             "1.0",
-            truncate(text, 1800),
+            truncate(
+                text,
+                1800,
+            ),
         )
 
-        widget.configure(state="disabled")
+        widget.configure(
+            state="disabled"
+        )
 
     # --------------------------------------------------------
     # Choices
     # --------------------------------------------------------
 
-    def choose(self, result: str):
+    def choose(
+        self,
+        result: str,
+    ):
         if (
             self.engine is None
             or self.current_pair is None
         ):
             return
 
-        left_id, right_id = self.current_pair
+        left_id, right_id = (
+            self.current_pair
+        )
 
         try:
             self.engine.apply_match(
@@ -2390,15 +3026,15 @@ class RankerApp:
             return
 
         self.current_pair = None
+
         self.refresh()
 
     def skip(self):
         if self.engine is None:
             return
 
-        # Skip does NOT count as evidence.
-        # It simply moves to another pair.
         self.current_pair = None
+
         self.refresh()
 
     # --------------------------------------------------------
@@ -2417,6 +3053,7 @@ class RankerApp:
                 self.engine
             )
         except Exception as exc:
+            # Saving should never stop the ranking UI.
             print(
                 "Warning: could not save state:",
                 exc,
@@ -2435,7 +3072,9 @@ class RankerApp:
 
         if self.engine.undo():
             self.save_state()
+
             self.current_pair = None
+
             self.refresh()
 
     # --------------------------------------------------------
@@ -2476,14 +3115,23 @@ class RankerApp:
         if self.engine is None:
             messagebox.showinfo(
                 "No ranking",
-                "Open a Goodreads file first.",
+                (
+                    "Open a Goodreads file first."
+                ),
             )
             return
 
-        window = tk.Toplevel(self.root)
+        window = tk.Toplevel(
+            self.root
+        )
 
-        window.title("Current Ranking")
-        window.geometry("1100x650")
+        window.title(
+            "Current Ranking"
+        )
+
+        window.geometry(
+            "1100x650"
+        )
 
         frame = ttk.Frame(
             window,
@@ -2557,7 +3205,11 @@ class RankerApp:
                 width=widths[column],
                 anchor=(
                     "w"
-                    if column in ("title", "author")
+                    if column
+                    in (
+                        "title",
+                        "author",
+                    )
                     else "center"
                 ),
             )
@@ -2617,7 +3269,9 @@ class RankerApp:
         ):
             messagebox.showinfo(
                 "Nothing to export",
-                "Open a Goodreads file first.",
+                (
+                    "Open a Goodreads file first."
+                ),
             )
             return
 
@@ -2631,9 +3285,10 @@ class RankerApp:
             messagebox.showerror(
                 "Could not save",
                 (
-                    "Windows could not save the ranked workbook.\n\n"
-                    "If the output file is open in Excel, "
-                    "close it and try again."
+                    "Windows could not save the "
+                    "ranked workbook.\n\n"
+                    "If the output file is open in "
+                    "Excel, close it and try again."
                 ),
             )
             return
@@ -2655,23 +3310,33 @@ class RankerApp:
         )
 
         if open_file:
-            self.open_external(output_path)
+            self.open_external(
+                output_path
+            )
 
     @staticmethod
-    def open_external(path: Path):
+    def open_external(
+        path: Path,
+    ):
         try:
-            if sys.platform.startswith("win"):
-                os.startfile(str(path))
+            if sys.platform.startswith(
+                "win"
+            ):
+                os.startfile(
+                    str(path)
+                )
 
             elif sys.platform == "darwin":
-                subprocess.Popen(
-                    ["open", str(path)]
-                )
+                subprocess.Popen([
+                    "open",
+                    str(path),
+                ])
 
             else:
-                subprocess.Popen(
-                    ["xdg-open", str(path)]
-                )
+                subprocess.Popen([
+                    "xdg-open",
+                    str(path),
+                ])
 
         except Exception:
             pass
@@ -2684,10 +3349,6 @@ class RankerApp:
         messagebox.showinfo(
             "Keyboard shortcuts",
             (
-                "1   Choose left book\n"
-                "2   Choose right book\n"
-                "3   Tie / equal\n"
-                "4   Skip pair\n"
                 "←   Choose left book\n"
                 "→   Choose right book\n"
                 "T   Tie / equal\n"
@@ -2706,13 +3367,6 @@ class RankerApp:
                 f"Version {APP_VERSION}\n\n"
                 "Ranks Goodreads to-read books using "
                 "pairwise comparisons and Glicko-2.\n\n"
-                "Speed improvements for large libraries:\n"
-                "• Quick mode: 3 comparisons/book\n"
-                "• Balanced mode: 6 comparisons/book\n"
-                "• Accurate mode: 12 comparisons/book\n"
-                "• Smarter pair selection\n"
-                "• Number-key shortcuts\n"
-                "• Skip pairs without affecting evidence\n\n"
                 'Only rows where "Exclusive Shelf" '
                 'equals "to-read" are included.\n\n'
                 "Your original Goodreads workbook is "
@@ -2726,6 +3380,7 @@ class RankerApp:
 
     def on_close(self):
         self.save_state()
+
         self.root.destroy()
 
 
@@ -2736,7 +3391,9 @@ class RankerApp:
 def main():
     root = tk.Tk()
 
-    RankerApp(root)
+    RankerApp(
+        root
+    )
 
     root.mainloop()
 
