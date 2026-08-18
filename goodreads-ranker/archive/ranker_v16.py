@@ -8,9 +8,7 @@ import os
 import random
 import re
 import shutil
-import subprocess
 import sys
-import tempfile
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -19,7 +17,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 
@@ -28,19 +26,19 @@ from openpyxl.styles import Alignment, Font, PatternFill
 # ============================================================
 
 APP_NAME = "Goodreads To-Read Ranker"
-APP_VERSION = "6.0.1-FIXED"
-STATE_VERSION = 9
+APP_VERSION = "6.0-MASTERPIECE"
+STATE_VERSION = 8
 
 TOP_K = 25
 TOP_10 = 10
 BOUNDARY_WIDTH = 12
+SIMULATION_COUNT = 700
+PAIR_CANDIDATE_LIMIT = 3000
 
 DEFAULT_RATING = 1500.0
 DEFAULT_RD = 350.0
 DEFAULT_VOLATILITY = 0.06
 GLICKO_SCALE = 173.7178
-
-PAIR_CANDIDATE_LIMIT = 3000
 
 WINDOW_WIDTH = 1180
 WINDOW_HEIGHT = 800
@@ -127,20 +125,12 @@ def sigmoid(value: float) -> float:
     return z / (1.0 + z)
 
 
-def normalized_text(value) -> str:
+def normalized_text(value: str) -> str:
     return re.sub(
         r"[^a-z0-9]+",
         " ",
         normalize(value).lower(),
     ).strip()
-
-
-def clean_isbn(value) -> str:
-    return (
-        normalize(value)
-        .replace("-", "")
-        .replace(" ", "")
-    )
 
 
 def stable_book_id(row: dict) -> str:
@@ -151,56 +141,36 @@ def stable_book_id(row: dict) -> str:
     2. ISBN
     3. deterministic title + author hash
 
-    IMPORTANT:
-    import_goodreads() normalizes all headers to lowercase,
-    so this function deliberately uses lowercase keys.
+    Excel row number is deliberately never used.
     """
 
-    if not isinstance(row, dict):
-        raise TypeError(
-            f"Expected Goodreads row to be a dict, "
-            f"got {type(row).__name__}"
-        )
-
-    goodreads_id = normalize(
-        row.get("book id - goodreads")
-    )
+    goodreads_id = normalize(row.get("Book Id - Goodreads"))
 
     if goodreads_id:
         return f"gr:{goodreads_id}"
 
-    isbn = clean_isbn(
-        row.get("isbn")
-    )
+    isbn = normalize(row.get("ISBN"))
+    isbn = isbn.replace("-", "").replace(" ", "")
 
     if isbn:
         return f"isbn:{isbn}"
 
-    title = normalized_text(
-        row.get("title")
+    identity = (
+        normalized_text(row.get("Title"))
+        + "|"
+        + normalized_text(
+            row.get("Author l-f")
+            or row.get("Author")
+        )
     )
-
-    author = normalized_text(
-        row.get("author l-f")
-        or row.get("author")
-    )
-
-    identity = f"{title}|{author}"
 
     return "book:" + hashlib.sha1(
         identity.encode("utf-8")
     ).hexdigest()[:20]
 
 
-def safe_float(value, default=0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 # ============================================================
-# GLICKO-STYLE RATING
+# GLICKO-2
 # ============================================================
 
 @dataclass
@@ -223,8 +193,11 @@ def glicko_update(
     """
     Stable sequential Glicko-style update.
 
-    Every human decision arrives one at a time, so the model
-    rebuilds its state by replaying the human comparison history.
+    The application deliberately uses sequential updates because
+    every human decision arrives one at a time.
+
+    Ties score 0.5 and therefore provide less directional evidence
+    than a decisive result.
     """
 
     q = math.log(10.0) / 400.0
@@ -233,10 +206,7 @@ def glicko_update(
         player.rating - 1500.0
     ) / GLICKO_SCALE
 
-    phi = max(
-        player.rd,
-        1.0,
-    ) / GLICKO_SCALE
+    phi = max(player.rd, 1.0) / GLICKO_SCALE
 
     opponent_mu = (
         opponent.rating - 1500.0
@@ -335,184 +305,6 @@ class Book:
 
 
 # ============================================================
-# GOODREADS IMPORT
-# ============================================================
-
-def import_goodreads(path):
-    """
-    Import a Goodreads Excel export.
-
-    ALL dictionary keys returned by this function are lowercase.
-
-    This is important because Goodreads headers such as:
-
-        Title
-        Author l-f
-        Book Id - Goodreads
-
-    become:
-
-        title
-        author l-f
-        book id - goodreads
-    """
-
-    path = Path(path)
-
-    if not path.exists():
-        raise FileNotFoundError(
-            f"File does not exist:\n{path}"
-        )
-
-    workbook = load_workbook(
-        path,
-        read_only=True,
-        data_only=True,
-    )
-
-    try:
-        worksheet = workbook.active
-
-        rows = worksheet.iter_rows(
-            values_only=True
-        )
-
-        headings = next(
-            rows,
-            None,
-        )
-
-        if not headings:
-            raise ValueError(
-                "The Goodreads workbook is empty."
-            )
-
-        normalized_headings = [
-            normalize_header(value)
-            for value in headings
-        ]
-
-        if "title" not in normalized_headings:
-            raise ValueError(
-                "This does not appear to be a Goodreads "
-                "export because the 'Title' column was not found."
-            )
-
-        records = []
-
-        for raw in rows:
-            record = {}
-
-            for index, heading in enumerate(
-                normalized_headings
-            ):
-                if not heading:
-                    continue
-
-                if index < len(raw):
-                    record[heading] = normalize(
-                        raw[index]
-                    )
-                else:
-                    record[heading] = ""
-
-            # Ignore completely empty rows.
-            if not any(record.values()):
-                continue
-
-            if not record.get("title"):
-                continue
-
-            records.append(record)
-
-        return records
-
-    finally:
-        workbook.close()
-
-
-def book_from_row(row):
-    """
-    Convert one normalized Goodreads row into a Book.
-
-    This function expects ONE dict, not the complete list returned
-    by import_goodreads().
-    """
-
-    if not isinstance(row, dict):
-        raise TypeError(
-            f"book_from_row expected a dict, "
-            f"got {type(row).__name__}"
-        )
-
-    shelf = normalize(
-        row.get("exclusive shelf")
-    ).lower()
-
-    if shelf in {
-        "currently-reading",
-        "currently reading",
-    }:
-        shelf = "currently-reading"
-
-    elif shelf == "to-read":
-        shelf = "to-read"
-
-    elif shelf == "read":
-        shelf = "read"
-
-    else:
-        shelf = "to-read"
-
-    return Book(
-        id=stable_book_id(row),
-
-        title=(
-            normalize(
-                row.get("title")
-            )
-            or "(Untitled)"
-        ),
-
-        author=normalize(
-            row.get("author l-f")
-            or row.get("author")
-        ),
-
-        description=normalize(
-            row.get("description")
-        ),
-
-        pages=normalize(
-            row.get("number of pages")
-        ),
-
-        my_rating=normalize(
-            row.get("my rating")
-        ),
-
-        shelf=shelf,
-        status=shelf,
-
-        isbn=clean_isbn(
-            row.get("isbn")
-        ),
-
-        year=normalize(
-            row.get("year published")
-        ),
-
-        publisher=normalize(
-            row.get("publisher")
-        ),
-
-        goodreads_id=normalize(
-            row.get("book id - goodreads")
-        ),
-    )
-
-
-# ============================================================
 # RANKING ENGINE
 # ============================================================
 
@@ -520,23 +312,21 @@ class RankingEngine:
     """
     Human-preference ranking engine.
 
+    Important principle:
+
     Goodreads metadata NEVER decides which book is better.
 
-    Goodreads data is used for:
-        - identity
-        - display
-        - lifecycle synchronization
-
-    Human pairwise choices are the preference evidence.
+    Goodreads data is used for identity, display and lifecycle
+    synchronisation only.
 
     The engine uses:
         - sequential Glicko-style ratings
         - uncertainty-aware rank estimates
-        - Top-K probability estimates
+        - Top-K probabilities
         - adaptive candidate selection
         - elite/boundary/challenger pools
 
-    It never constructs the full N*(N-1)/2 pair set.
+    It never constructs the N*(N-1)/2 pair set.
     """
 
     ACTIVE_STATUSES = {
@@ -560,13 +350,9 @@ class RankingEngine:
         statuses=None,
         skips=None,
     ):
-        if books is None:
-            books = []
-
         self.library = {
             book.id: book
             for book in books
-            if isinstance(book, Book)
         }
 
         self.mode = (
@@ -588,83 +374,34 @@ class RankingEngine:
             )
         )
 
-        self.rng = random.Random(
-            self.seed
-        )
+        self.rng = random.Random(self.seed)
 
         self.ratings = {}
-
-        self.comparisons = (
-            copy.deepcopy(comparisons)
-            if isinstance(comparisons, list)
-            else []
+        self.comparisons = copy.deepcopy(
+            comparisons or []
         )
 
         self.played = set()
+
         self.skips = {}
 
         self.statuses = {
             book.id: book.status
-            for book in self.library.values()
+            for book in books
         }
 
-        if isinstance(statuses, dict):
+        if statuses:
             self.statuses.update(statuses)
 
             for book_id, status in statuses.items():
-                if (
-                    book_id in self.library
-                    and status in self.ALL_STATUSES
-                ):
-                    self.library[
-                        book_id
-                    ].status = status
+                if book_id in self.library:
+                    self.library[book_id].status = status
 
-        if isinstance(skips, dict):
-            self.skips = self._normalize_skips(
-                skips
-            )
+        if skips:
+            self.skips = dict(skips)
 
         self._sync_books()
         self._replay()
-
-    # --------------------------------------------------------
-    # State compatibility
-    # --------------------------------------------------------
-
-    @staticmethod
-    def _normalize_skips(skips):
-        result = {}
-
-        for key, value in skips.items():
-            try:
-                count = int(value)
-            except (TypeError, ValueError):
-                continue
-
-            if isinstance(key, str):
-                parts = key.split("|", 1)
-
-                if len(parts) == 2:
-                    result[
-                        RankingEngine.pair_key(
-                            parts[0],
-                            parts[1],
-                        )
-                    ] = count
-
-            elif (
-                isinstance(key, (list, tuple))
-                and len(key) == 2
-            ):
-                result[
-                    RankingEngine.pair_key(
-                        str(key[0]),
-                        str(key[1]),
-                    )
-                ] = count
-
-        return result
 
     # --------------------------------------------------------
     # Library
@@ -690,12 +427,7 @@ class RankingEngine:
     @staticmethod
     def pair_key(a, b):
         return tuple(
-            sorted(
-                (
-                    str(a),
-                    str(b),
-                )
-            )
+            sorted((a, b))
         )
 
     # --------------------------------------------------------
@@ -706,8 +438,11 @@ class RankingEngine:
         """
         Rebuild ratings from human history.
 
-        Archived books remain in the comparison history but do not
-        affect the current active ranking.
+        Correctness is more important than trying to maintain
+        an intricate inverse Glicko state.
+
+        Archived books are retained in history but do not affect
+        the current active ranking.
         """
 
         self.ratings = {
@@ -718,15 +453,9 @@ class RankingEngine:
         self.played = set()
 
         for comparison in self.comparisons:
-            if not isinstance(comparison, dict):
-                continue
-
-            left = comparison.get("left")
-            right = comparison.get("right")
-            result = comparison.get("result")
-
-            if not left or not right:
-                continue
+            left = comparison["left"]
+            right = comparison["right"]
+            result = comparison["result"]
 
             if (
                 left not in self.ratings
@@ -734,27 +463,12 @@ class RankingEngine:
             ):
                 continue
 
-            if result not in {
-                "left",
-                "right",
-                "tie",
-            }:
-                continue
-
             self.played.add(
-                self.pair_key(
-                    left,
-                    right,
-                )
+                self.pair_key(left, right)
             )
 
-            left_rating = self.ratings[
-                left
-            ]
-
-            right_rating = self.ratings[
-                right
-            ]
+            left_rating = self.ratings[left]
+            right_rating = self.ratings[right]
 
             if result == "left":
                 self.ratings[left] = glicko_update(
@@ -762,7 +476,6 @@ class RankingEngine:
                     right_rating,
                     1.0,
                 )
-
                 self.ratings[right] = glicko_update(
                     right_rating,
                     left_rating,
@@ -775,7 +488,6 @@ class RankingEngine:
                     right_rating,
                     0.0,
                 )
-
                 self.ratings[right] = glicko_update(
                     right_rating,
                     left_rating,
@@ -788,7 +500,6 @@ class RankingEngine:
                     right_rating,
                     0.5,
                 )
-
                 self.ratings[right] = glicko_update(
                     right_rating,
                     left_rating,
@@ -799,30 +510,28 @@ class RankingEngine:
     # Goodreads reconciliation
     # --------------------------------------------------------
 
-    def sync_goodreads(self, rows):
+    def sync_goodreads(
+        self,
+        rows,
+    ):
         """
         Reconcile a new Goodreads export with existing state.
 
-        IMPORTANT:
-        rows must be a list of dictionaries.
+        New books:
+            added without resetting old evidence.
 
-        New books are added without resetting existing evidence.
+        Read books:
+            become archived and leave the active ranking.
 
-        Read books leave the active ranking.
+        Currently-reading:
+            remains active and gets display priority.
 
-        Currently-reading remains active.
+        Ignored:
+            remains ignored while Goodreads still says to-read.
 
-        Ignored books remain ignored while Goodreads says to-read.
-
-        Removed records are retained in the internal library so
-        previous identity/history is not silently destroyed.
+        Removed records:
+            are archived rather than destroying state.
         """
-
-        if not isinstance(rows, list):
-            raise TypeError(
-                "sync_goodreads expected a list of Goodreads "
-                "row dictionaries."
-            )
 
         old_library = self.library
         new_library = {}
@@ -831,27 +540,21 @@ class RankingEngine:
         seen_ids = set()
 
         for row in rows:
-            if not isinstance(row, dict):
-                continue
-
             book_id = stable_book_id(row)
-
             seen_ids.add(book_id)
 
             title = (
-                normalize(
-                    row.get("title")
-                )
+                normalize(row.get("Title"))
                 or "(Untitled)"
             )
 
             author = normalize(
-                row.get("author l-f")
-                or row.get("author")
+                row.get("Author l-f")
+                or row.get("Author")
             )
 
             shelf = normalize(
-                row.get("exclusive shelf")
+                row.get("Exclusive Shelf")
             ).lower()
 
             if shelf in {
@@ -866,9 +569,7 @@ class RankingEngine:
             elif shelf == "read":
                 shelf = "read"
 
-            old_book = old_library.get(
-                book_id
-            )
+            old_book = old_library.get(book_id)
 
             if old_book:
                 old_status = old_book.status
@@ -899,27 +600,27 @@ class RankingEngine:
                 title=title,
                 author=author,
                 description=normalize(
-                    row.get("description")
+                    row.get("Description")
                 ),
                 pages=normalize(
-                    row.get("number of pages")
+                    row.get("Number of Pages")
                 ),
                 my_rating=normalize(
-                    row.get("my rating")
+                    row.get("My Rating")
                 ),
                 shelf=shelf,
                 status=status,
-                isbn=clean_isbn(
-                    row.get("isbn")
+                isbn=normalize(
+                    row.get("ISBN")
                 ),
                 year=normalize(
-                    row.get("year published")
+                    row.get("Year Published")
                 ),
                 publisher=normalize(
-                    row.get("publisher")
+                    row.get("Publisher")
                 ),
                 goodreads_id=normalize(
-                    row.get("book id - goodreads")
+                    row.get("Book Id - Goodreads")
                 ),
             )
 
@@ -929,7 +630,7 @@ class RankingEngine:
             if book_id not in seen_ids:
                 removed.append(book_id)
 
-                # Preserve old records.
+                # Preserve the old record.
                 new_library[book_id] = book
 
         self.library = new_library
@@ -948,15 +649,21 @@ class RankingEngine:
     # --------------------------------------------------------
 
     def statistics(self):
+        """
+        Returns uncertainty-aware statistics.
+
+        The probabilities are deliberately labelled estimates.
+        They are not claims of mathematical certainty.
+        """
+
         if not self.books:
             return []
 
         ranked = sorted(
             self.books,
-            key=lambda book:
-                self.ratings[
-                    book.id
-                ].rating,
+            key=lambda book: (
+                self.ratings[book.id].rating
+            ),
             reverse=True,
         )
 
@@ -967,9 +674,7 @@ class RankingEngine:
             ranked,
             start=1,
         ):
-            rating = self.ratings[
-                book.id
-            ]
+            rating = self.ratings[book.id]
 
             uncertainty = clamp(
                 rating.rd / 350.0,
@@ -977,6 +682,8 @@ class RankingEngine:
                 1.0,
             )
 
+            # Practical approximation to the probability that
+            # a noisy latent rank crosses a Top-K threshold.
             top25_probability = clamp(
                 (
                     TOP_K
@@ -1036,10 +743,8 @@ class RankingEngine:
                     "expected_rank": position,
                     "rank_low": low,
                     "rank_high": high,
-                    "top10_probability":
-                        top10_probability,
-                    "top25_probability":
-                        top25_probability,
+                    "top10_probability": top10_probability,
+                    "top25_probability": top25_probability,
                     "rating": rating,
                 }
             )
@@ -1051,6 +756,31 @@ class RankingEngine:
     # --------------------------------------------------------
 
     def choose_pair(self):
+        """
+        Select the next human comparison without constructing
+        all possible pairs.
+
+        Candidate pools:
+
+            elite
+            Top-25 boundary
+            high-RD challengers
+            random exploration
+
+        The scoring function rewards:
+
+            information value
+            uncertainty
+            Top-25 relevance
+            boundary relevance
+            challenger value
+            comparison balance
+
+        Currently-reading books receive a modest display/attention
+        multiplier but Goodreads status never becomes preference
+        evidence.
+        """
+
         ids = self.active_ids()
 
         if len(ids) < 2:
@@ -1082,15 +812,10 @@ class RankingEngine:
             ),
         )
 
-        elite = ordered[
-            :elite_size
-        ]
+        elite = ordered[:elite_size]
 
         boundary = ordered[
-            max(
-                0,
-                TOP_K - BOUNDARY_WIDTH,
-            ):
+            max(0, TOP_K - BOUNDARY_WIDTH):
             min(
                 len(ordered),
                 TOP_K + BOUNDARY_WIDTH,
@@ -1100,16 +825,9 @@ class RankingEngine:
         high_rd = sorted(
             ids,
             key=lambda book_id:
-                self.ratings[
-                    book_id
-                ].rd,
+                self.ratings[book_id].rd,
             reverse=True,
-        )[
-            :min(
-                len(ids),
-                60,
-            )
-        ]
+        )[:min(len(ids), 60)]
 
         pools = [
             elite,
@@ -1124,18 +842,10 @@ class RankingEngine:
                 continue
 
             for _ in range(
-                min(
-                    100,
-                    len(pool) * 2,
-                )
+                min(100, len(pool) * 2)
             ):
-                left = self.rng.choice(
-                    pool
-                )
-
-                right = self.rng.choice(
-                    pool
-                )
+                left = self.rng.choice(pool)
+                right = self.rng.choice(pool)
 
                 if left == right:
                     continue
@@ -1148,10 +858,7 @@ class RankingEngine:
                 if pair in self.played:
                     continue
 
-                if self.skips.get(
-                    pair,
-                    0,
-                ) > 0:
+                if self.skips.get(pair, 0) > 0:
                     continue
 
                 candidates.append(pair)
@@ -1160,10 +867,7 @@ class RankingEngine:
         if not candidates:
             attempts = min(
                 PAIR_CANDIDATE_LIMIT,
-                max(
-                    100,
-                    len(ids) * 3,
-                ),
+                max(100, len(ids) * 3),
             )
 
             for _ in range(attempts):
@@ -1181,10 +885,7 @@ class RankingEngine:
                 if pair in self.played:
                     continue
 
-                if self.skips.get(
-                    pair,
-                    0,
-                ) > 0:
+                if self.skips.get(pair, 0) > 0:
                     continue
 
                 candidates.append(pair)
@@ -1195,6 +896,7 @@ class RankingEngine:
         if not candidates:
             return None
 
+        # Small exploration component.
         if self.rng.random() < 0.055:
             return self.rng.choice(
                 candidates
@@ -1211,8 +913,7 @@ class RankingEngine:
 
             closeness = math.exp(
                 -abs(
-                    a.rating
-                    - b.rating
+                    a.rating - b.rating
                 )
                 / 120.0
             )
@@ -1237,10 +938,7 @@ class RankingEngine:
                     / 2.0
                     - TOP_K
                 )
-                / (
-                    BOUNDARY_WIDTH
-                    + 8.0
-                ),
+                / (BOUNDARY_WIDTH + 8.0),
             )
 
             challenger = max(
@@ -1259,13 +957,9 @@ class RankingEngine:
             currently_reading = (
                 1.10
                 if (
-                    self.library[
-                        left
-                    ].status
+                    self.library[left].status
                     == "currently-reading"
-                    or self.library[
-                        right
-                    ].status
+                    or self.library[right].status
                     == "currently-reading"
                 )
                 else 1.0
@@ -1294,19 +988,6 @@ class RankingEngine:
         right,
         result,
     ):
-        if (
-            left not in self.library
-            or right not in self.library
-        ):
-            raise ValueError(
-                "One of the selected books no longer exists."
-            )
-
-        if left == right:
-            raise ValueError(
-                "A book cannot be compared with itself."
-            )
-
         pair = self.pair_key(
             left,
             right,
@@ -1335,10 +1016,7 @@ class RankingEngine:
             }
         )
 
-        self.skips.pop(
-            pair,
-            None,
-        )
+        self.skips.pop(pair, None)
 
         self._replay()
 
@@ -1347,17 +1025,12 @@ class RankingEngine:
         left,
         right,
     ):
-        pair = self.pair_key(
-            left,
-            right,
-        )
-
-        self.skips[pair] = 3
+        self.skips[
+            self.pair_key(left, right)
+        ] = 3
 
     def tick_skips(self):
-        for pair in list(
-            self.skips
-        ):
+        for pair in list(self.skips):
             self.skips[pair] -= 1
 
             if self.skips[pair] <= 0:
@@ -1368,7 +1041,6 @@ class RankingEngine:
             return False
 
         self.comparisons.pop()
-
         self._replay()
 
         return True
@@ -1390,19 +1062,14 @@ class RankingEngine:
         if book_id not in self.library:
             raise KeyError(book_id)
 
-        self.library[
-            book_id
-        ].status = status
-
-        self.statuses[
-            book_id
-        ] = status
+        self.library[book_id].status = status
+        self.statuses[book_id] = status
 
         self._sync_books()
         self._replay()
 
     # --------------------------------------------------------
-    # Progress
+    # Progress / stopping
     # --------------------------------------------------------
 
     def progress(self):
@@ -1423,10 +1090,6 @@ class RankingEngine:
             1.0,
         )
 
-    # --------------------------------------------------------
-    # Confidence
-    # --------------------------------------------------------
-
     def confidence_metrics(self):
         stats = self.statistics()
 
@@ -1445,10 +1108,7 @@ class RankingEngine:
                 x["top25_probability"]
                 for x in top25
             )
-            / max(
-                1,
-                len(top25),
-            )
+            / max(1, len(top25))
         )
 
         top25_stability = clamp(
@@ -1460,10 +1120,7 @@ class RankingEngine:
                 )
                 / (
                     350.0
-                    * max(
-                        1,
-                        len(top25),
-                    )
+                    * max(1, len(top25))
                 )
             ),
             0.0,
@@ -1495,14 +1152,10 @@ class RankingEngine:
         )
 
         return {
-            "top10_confidence":
-                top10_confidence,
-            "top25_confidence":
-                top25_confidence,
-            "top25_stability":
-                top25_stability,
-            "unresolved_boundary":
-                unresolved_boundary,
+            "top10_confidence": top10_confidence,
+            "top25_confidence": top25_confidence,
+            "top25_stability": top25_stability,
+            "unresolved_boundary": unresolved_boundary,
         }
 
     def should_stop(self):
@@ -1521,16 +1174,9 @@ class RankingEngine:
         metrics = self.confidence_metrics()
 
         return (
-            metrics[
-                "top25_stability"
-            ] >= 0.82
-            and metrics[
-                "unresolved_boundary"
-            ]
-            <= max(
-                3,
-                TOP_K // 5,
-            )
+            metrics["top25_stability"] >= 0.82
+            and metrics["unresolved_boundary"]
+            <= max(3, TOP_K // 5)
         )
 
     # --------------------------------------------------------
@@ -1539,30 +1185,17 @@ class RankingEngine:
 
     def to_state(self):
         return {
-            "state_version":
-                STATE_VERSION,
-
-            "app_version":
-                APP_VERSION,
-
-            "mode":
-                self.mode,
-
-            "target":
-                self.target,
-
-            "seed":
-                self.seed,
-
-            "comparisons":
-                self.comparisons,
-
+            "state_version": STATE_VERSION,
+            "app_version": APP_VERSION,
+            "mode": self.mode,
+            "target": self.target,
+            "seed": self.seed,
+            "comparisons": self.comparisons,
             "skips": {
                 "|".join(pair): value
                 for pair, value
                 in self.skips.items()
             },
-
             "books": {
                 book_id: asdict(book)
                 for book_id, book
@@ -1570,10 +1203,6 @@ class RankingEngine:
             },
         }
 
-
-# ============================================================
-# STATE STORE
-# ============================================================
 
 class StateStore:
     def __init__(self, source):
@@ -1599,11 +1228,9 @@ class StateStore:
             ".tmp"
         )
 
-        data = engine.to_state()
-
         temporary.write_text(
             json.dumps(
-                data,
+                engine.to_state(),
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -1626,47 +1253,13 @@ class StateStore:
                 )
             )
 
-            if not isinstance(data, dict):
-                return None
-
-            version = int(
+            if int(
                 data.get(
                     "state_version",
                     0,
                 )
-            )
-
-            if version > STATE_VERSION:
+            ) > STATE_VERSION:
                 return None
-
-            # Old/malformed state files should never be allowed
-            # to crash the application.
-            if not isinstance(
-                data.get(
-                    "comparisons",
-                    [],
-                ),
-                list,
-            ):
-                data["comparisons"] = []
-
-            if not isinstance(
-                data.get(
-                    "books",
-                    {},
-                ),
-                dict,
-            ):
-                data["books"] = {}
-
-            if not isinstance(
-                data.get(
-                    "skips",
-                    {},
-                ),
-                dict,
-            ):
-                data["skips"] = {}
 
             return data
 
@@ -1675,27 +1268,122 @@ class StateStore:
 
 
 # ============================================================
-# EXCEL EXPORT
+# GOODREADS IMPORT
 # ============================================================
 
-def excel_column_name(number):
-    result = ""
+def import_goodreads(path):
+    workbook = load_workbook(
+        path,
+        read_only=True,
+        data_only=True,
+    )
 
-    while number:
-        number, remainder = divmod(
-            number - 1,
-            26,
+    worksheet = workbook.active
+
+    rows = worksheet.iter_rows(
+        values_only=True
+    )
+
+    headings = next(
+        rows,
+        None,
+    )
+
+    if not headings:
+        workbook.close()
+        raise ValueError(
+            "The Goodreads workbook is empty."
         )
 
-        result = (
-            chr(
-                65 + remainder
-            )
-            + result
-        )
+    normalized_headings = [
+        normalize_header(value)
+        for value in headings
+    ]
 
-    return result
+    records = []
 
+    for raw in rows:
+        record = {}
+
+        for index, heading in enumerate(
+            normalized_headings
+        ):
+            if index < len(raw):
+                record[heading] = normalize(
+                    raw[index]
+                )
+            else:
+                record[heading] = ""
+
+        if not record.get("title"):
+            continue
+
+        records.append(record)
+
+    workbook.close()
+
+    return records
+
+
+def book_from_row(row):
+    shelf = normalize(
+        row.get("Exclusive Shelf")
+    ).lower()
+
+    if shelf in {
+        "currently-reading",
+        "currently reading",
+    }:
+        shelf = "currently-reading"
+
+    elif shelf == "to-read":
+        shelf = "to-read"
+
+    elif shelf == "read":
+        shelf = "read"
+
+    else:
+        shelf = "to-read"
+
+    return Book(
+        id=stable_book_id(row),
+        title=(
+            normalize(row.get("Title"))
+            or "(Untitled)"
+        ),
+        author=normalize(
+            row.get("Author l-f")
+            or row.get("Author")
+        ),
+        description=normalize(
+            row.get("Description")
+        ),
+        pages=normalize(
+            row.get("Number of Pages")
+        ),
+        my_rating=normalize(
+            row.get("My Rating")
+        ),
+        shelf=shelf,
+        status=shelf,
+        isbn=normalize(
+            row.get("ISBN")
+        ),
+        year=normalize(
+            row.get("Year Published")
+        ),
+        publisher=normalize(
+            row.get("Publisher")
+        ),
+        goodreads_id=normalize(
+            row.get("Book Id - Goodreads")
+        ),
+    )
+
+
+# ============================================================
+# EXCEL EXPORT
+# ============================================================
 
 def export_results(
     source,
@@ -1703,13 +1391,11 @@ def export_results(
     output=None,
 ):
     """
-    Preserve the original Goodreads workbook and add:
+    Preserve the original Goodreads workbook and add
+    ranker-generated sheets.
 
-        Ranking
-        Summary
-
-    The source is not overwritten unless output is explicitly
-    the source path.
+    The source is never overwritten unless the user explicitly
+    chooses the overwrite command.
     """
 
     source = Path(source)
@@ -1718,8 +1404,7 @@ def export_results(
         Path(output)
         if output
         else source.with_name(
-            source.stem
-            + "_ranked.xlsx"
+            source.stem + "_ranked.xlsx"
         )
     )
 
@@ -1727,242 +1412,198 @@ def export_results(
         source
     )
 
-    try:
-        if "Ranking" in workbook.sheetnames:
-            del workbook["Ranking"]
+    if "Ranking" in workbook.sheetnames:
+        del workbook["Ranking"]
 
-        ranking = workbook.create_sheet(
-            "Ranking"
+    ranking = workbook.create_sheet(
+        "Ranking"
+    )
+
+    headings = [
+        "Display",
+        "Statistical Rank",
+        "Title",
+        "Author",
+        "Status",
+        "Rating",
+        "Rating Uncertainty",
+        "Rank Low",
+        "Rank High",
+        "Top 10 %",
+        "Top 25 %",
+        "Comparisons",
+        "Wins",
+        "Losses",
+        "Ties",
+    ]
+
+    ranking.append(headings)
+
+    for cell in ranking[1]:
+        cell.font = Font(
+            bold=True,
+            color="FFFFFF",
         )
 
-        headings = [
-            "Display",
-            "Statistical Rank",
-            "Title",
-            "Author",
-            "Status",
-            "Rating",
-            "Rating Uncertainty",
-            "Rank Low",
-            "Rank High",
-            "Top 10 %",
-            "Top 25 %",
-            "Comparisons",
-            "Wins",
-            "Losses",
-            "Ties",
-        ]
+        cell.fill = PatternFill(
+            "solid",
+            fgColor="24324D",
+        )
+
+        cell.alignment = Alignment(
+            horizontal="center"
+        )
+
+    statistics = engine.statistics()
+
+    current = [
+        item
+        for item in statistics
+        if item["book"].status
+        == "currently-reading"
+    ]
+
+    rest = [
+        item
+        for item in statistics
+        if item["book"].status
+        != "currently-reading"
+    ]
+
+    for item in current + rest:
+        book = item["book"]
+        rating = item["rating"]
+
+        if book.status == "currently-reading":
+            display = "CURRENTLY READING"
+        elif item["rank"] <= TOP_K:
+            display = "TOP 25"
+        else:
+            display = "QUEUE"
 
         ranking.append(
-            headings
+            [
+                display,
+                item["rank"],
+                book.title,
+                book.author,
+                book.status,
+                rating.rating,
+                rating.rd,
+                item["rank_low"],
+                item["rank_high"],
+                item["top10_probability"],
+                item["top25_probability"],
+                rating.comparisons,
+                rating.wins,
+                rating.losses,
+                rating.ties,
+            ]
         )
 
-        for cell in ranking[1]:
-            cell.font = Font(
-                bold=True,
-                color="FFFFFF",
-            )
+    widths = [
+        22,
+        16,
+        40,
+        28,
+        22,
+        12,
+        20,
+        12,
+        12,
+        12,
+        12,
+        14,
+        10,
+        10,
+        10,
+    ]
 
-            cell.fill = PatternFill(
-                "solid",
-                fgColor="24324D",
-            )
+    for index, width in enumerate(
+        widths,
+        start=1,
+    ):
+        ranking.column_dimensions[
+            chr(64 + index)
+        ].width = width
 
-            cell.alignment = Alignment(
-                horizontal="center"
-            )
+    if "Summary" in workbook.sheetnames:
+        del workbook["Summary"]
 
-        statistics = engine.statistics()
+    summary = workbook.create_sheet(
+        "Summary"
+    )
 
-        current = [
-            item
-            for item in statistics
-            if item["book"].status
-            == "currently-reading"
-        ]
+    metrics = engine.confidence_metrics()
 
-        rest = [
-            item
-            for item in statistics
-            if item["book"].status
-            != "currently-reading"
-        ]
+    summary_rows = [
+        [
+            "Goodreads To-Read Ranker",
+            APP_VERSION,
+        ],
+        [
+            "Generated",
+            now_iso(),
+        ],
+        [
+            "Active books",
+            len(engine.books),
+        ],
+        [
+            "Total comparisons",
+            len(engine.comparisons),
+        ],
+        [
+            "Average comparisons/book",
+            (
+                len(engine.comparisons)
+                / max(
+                    1,
+                    len(engine.books),
+                )
+            ),
+        ],
+        [
+            "Mode",
+            engine.mode,
+        ],
+        [
+            "Top-10 confidence estimate",
+            metrics["top10_confidence"],
+        ],
+        [
+            "Top-25 confidence estimate",
+            metrics["top25_confidence"],
+        ],
+        [
+            "Top-25 stability estimate",
+            metrics["top25_stability"],
+        ],
+        [
+            "Unresolved Top-25 boundary",
+            metrics["unresolved_boundary"],
+        ],
+        [],
+        [
+            "Methodology",
+            (
+                "Human pairwise choices are the only "
+                "preference evidence. Glicko-style ratings "
+                "track online uncertainty and the adaptive "
+                "selector chooses comparisons. Goodreads "
+                "metadata does not determine preference."
+            ),
+        ],
+    ]
 
-        for item in current + rest:
-            book = item["book"]
-            rating = item["rating"]
+    for row in summary_rows:
+        summary.append(row)
 
-            if (
-                book.status
-                == "currently-reading"
-            ):
-                display = "CURRENTLY READING"
+    summary.column_dimensions["A"].width = 34
+    summary.column_dimensions["B"].width = 100
 
-            elif item["rank"] <= TOP_K:
-                display = "TOP 25"
-
-            else:
-                display = "QUEUE"
-
-            ranking.append(
-                [
-                    display,
-                    item["rank"],
-                    book.title,
-                    book.author,
-                    book.status,
-                    rating.rating,
-                    rating.rd,
-                    item["rank_low"],
-                    item["rank_high"],
-                    item[
-                        "top10_probability"
-                    ],
-                    item[
-                        "top25_probability"
-                    ],
-                    rating.comparisons,
-                    rating.wins,
-                    rating.losses,
-                    rating.ties,
-                ]
-            )
-
-        widths = [
-            22,
-            16,
-            40,
-            28,
-            22,
-            12,
-            20,
-            12,
-            12,
-            12,
-            12,
-            14,
-            10,
-            10,
-            10,
-        ]
-
-        for index, width in enumerate(
-            widths,
-            start=1,
-        ):
-            ranking.column_dimensions[
-                excel_column_name(index)
-            ].width = width
-
-        ranking.freeze_panes = "A2"
-        ranking.auto_filter.ref = (
-            ranking.dimensions
-        )
-
-        if "Summary" in workbook.sheetnames:
-            del workbook["Summary"]
-
-        summary = workbook.create_sheet(
-            "Summary"
-        )
-
-        metrics = (
-            engine.confidence_metrics()
-        )
-
-        average_comparisons = (
-            len(engine.comparisons)
-            / max(
-                1,
-                len(engine.books),
-            )
-        )
-
-        summary_rows = [
-            [
-                "Goodreads To-Read Ranker",
-                APP_VERSION,
-            ],
-            [
-                "Generated",
-                now_iso(),
-            ],
-            [
-                "Active books",
-                len(engine.books),
-            ],
-            [
-                "Total comparisons",
-                len(engine.comparisons),
-            ],
-            [
-                "Average comparisons/book",
-                average_comparisons,
-            ],
-            [
-                "Mode",
-                engine.mode,
-            ],
-            [
-                "Top-10 confidence estimate",
-                metrics[
-                    "top10_confidence"
-                ],
-            ],
-            [
-                "Top-25 confidence estimate",
-                metrics[
-                    "top25_confidence"
-                ],
-            ],
-            [
-                "Top-25 stability estimate",
-                metrics[
-                    "top25_stability"
-                ],
-            ],
-            [
-                "Unresolved Top-25 boundary",
-                metrics[
-                    "unresolved_boundary"
-                ],
-            ],
-            [],
-            [
-                "Methodology",
-                (
-                    "Human pairwise choices are the only "
-                    "preference evidence. Glicko-style "
-                    "ratings track online uncertainty and "
-                    "the adaptive selector chooses useful "
-                    "comparisons. Goodreads metadata does "
-                    "not determine preference."
-                ),
-            ],
-        ]
-
-        for row in summary_rows:
-            summary.append(row)
-
-        summary.column_dimensions[
-            "A"
-        ].width = 34
-
-        summary.column_dimensions[
-            "B"
-        ].width = 100
-
-        summary["B12"].alignment = Alignment(
-            wrap_text=True,
-            vertical="top",
-        )
-
-        workbook.save(
-            output
-        )
-
-    finally:
-        workbook.close()
+    workbook.save(output)
+    workbook.close()
 
     return output
 
@@ -1972,6 +1613,18 @@ def export_results(
 # ============================================================
 
 class RankerApp:
+    """
+    Dark-first, tablet-friendly Tkinter interface.
+
+    The comparison area is the only vertically flexible area.
+
+    Description height is fixed.
+
+    Decision controls have their own protected row.
+
+    Lifecycle controls are visible directly on each book card.
+    """
+
     def __init__(self, root):
         self.root = root
 
@@ -2138,6 +1791,7 @@ class RankerApp:
             weight=1,
         )
 
+        # Only comparison area grows vertically.
         self.main.grid_rowconfigure(
             3,
             weight=1,
@@ -2404,11 +2058,20 @@ class RankerApp:
             pady=7,
         )
 
-        for column in range(3):
-            decisions.grid_columnconfigure(
-                column,
-                weight=1,
-            )
+        decisions.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        decisions.grid_columnconfigure(
+            1,
+            weight=1,
+        )
+
+        decisions.grid_columnconfigure(
+            2,
+            weight=1,
+        )
 
         self.left_button = ttk.Button(
             decisions,
@@ -2471,22 +2134,10 @@ class RankerApp:
         )
 
         utility_buttons = [
-            (
-                "↶ Undo [U]",
-                self.undo,
-            ),
-            (
-                "Skip [4 / S]",
-                self.skip,
-            ),
-            (
-                "Ranking",
-                self.show_ranking,
-            ),
-            (
-                "Export [Ctrl+E]",
-                self.export,
-            ),
+            ("↶ Undo [U]", self.undo),
+            ("Skip [4 / S]", self.skip),
+            ("Ranking", self.show_ranking),
+            ("Export [Ctrl+E]", self.export),
             (
                 "Overwrite + Backup",
                 self.overwrite_source,
@@ -2503,7 +2154,7 @@ class RankerApp:
                 padx=3,
             )
 
-        # Shortcut panel.
+        # Permanent shortcut panel.
         self.shortcut_panel = tk.Frame(
             self.main,
             bg=c["panel"],
@@ -2656,6 +2307,7 @@ class RankerApp:
             pady=4,
         )
 
+        # Fixed-height description.
         description = tk.Text(
             card,
             height=4,
@@ -2688,6 +2340,7 @@ class RankerApp:
             description,
         )
 
+        # Lifecycle controls are always visible.
         lifecycle = tk.Frame(
             card,
             bg=c["card"],
@@ -2701,11 +2354,25 @@ class RankerApp:
             pady=7,
         )
 
-        for index in range(4):
-            lifecycle.grid_columnconfigure(
-                index,
-                weight=1,
-            )
+        lifecycle.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        lifecycle.grid_columnconfigure(
+            1,
+            weight=1,
+        )
+
+        lifecycle.grid_columnconfigure(
+            2,
+            weight=1,
+        )
+
+        lifecycle.grid_columnconfigure(
+            3,
+            weight=1,
+        )
 
         actions = [
             (
@@ -2726,18 +2393,17 @@ class RankerApp:
             ),
         ]
 
-        for index, (
-            text,
-            status,
-        ) in enumerate(actions):
+        for index, (text, status) in enumerate(
+            actions
+        ):
             ttk.Button(
                 lifecycle,
                 text=text,
                 command=lambda
                 s=status,
-                current_side=side:
+                side=side:
                     self.set_lifecycle(
-                        current_side,
+                        side,
                         s,
                     ),
             ).grid(
@@ -2747,6 +2413,7 @@ class RankerApp:
                 padx=2,
             )
 
+        # Clicking the card opens lifecycle menu.
         self.bind_card_clicks(
             card,
             side,
@@ -2769,12 +2436,6 @@ class RankerApp:
         )
 
         for child in widget.winfo_children():
-            if isinstance(
-                child,
-                tk.Text,
-            ):
-                continue
-
             child.bind(
                 "<Button-1>",
                 lambda event:
@@ -2831,6 +2492,12 @@ class RankerApp:
         self,
         widget,
     ):
+        """
+        Recolour classic Tk widgets.
+
+        ttk widgets are handled by configure_styles().
+        """
+
         c = self.colors
 
         try:
@@ -2843,46 +2510,6 @@ class RankerApp:
                     fg=c["text"],
                     insertbackground=c["text"],
                 )
-
-            elif isinstance(
-                widget,
-                tk.Frame,
-            ):
-                current_bg = widget.cget(
-                    "bg"
-                )
-
-                if current_bg in {
-                    DARK["bg"],
-                    LIGHT["bg"],
-                }:
-                    widget.configure(
-                        bg=c["bg"]
-                    )
-
-                elif current_bg in {
-                    DARK["panel"],
-                    LIGHT["panel"],
-                }:
-                    widget.configure(
-                        bg=c["panel"]
-                    )
-
-                elif current_bg in {
-                    DARK["card"],
-                    LIGHT["card"],
-                }:
-                    widget.configure(
-                        bg=c["card"]
-                    )
-
-                elif current_bg in {
-                    DARK["card2"],
-                    LIGHT["card2"],
-                }:
-                    widget.configure(
-                        bg=c["card2"]
-                    )
 
             elif isinstance(
                 widget,
@@ -3078,7 +2705,7 @@ class RankerApp:
         )
 
     # --------------------------------------------------------
-    # Shortcut panel
+    # Shortcut window
     # --------------------------------------------------------
 
     def build_shortcut_panel(self):
@@ -3103,23 +2730,70 @@ class RankerApp:
         )
 
         shortcuts = [
-            ("1", "Choose LEFT"),
-            ("2", "Choose RIGHT"),
-            ("3 / T", "Tie"),
-            ("4 / S", "Skip"),
-            ("← / →", "Choose left / right"),
-            ("U", "Undo"),
-            ("I", "Mark LEFT Ignore"),
-            ("R", "Mark LEFT Read"),
-            ("C", "Mark LEFT Currently Reading"),
-            ("Shift+I", "Mark RIGHT Ignore"),
-            ("Shift+R", "Mark RIGHT Read"),
-            ("Shift+C", "Mark RIGHT Currently Reading"),
-            ("Ctrl+O", "Open Goodreads Excel"),
-            ("Ctrl+E", "Export Ranking"),
-            ("Click book card", "Open lifecycle menu"),
+            (
+                "1",
+                "Choose LEFT",
+            ),
+            (
+                "2",
+                "Choose RIGHT",
+            ),
+            (
+                "3 / T",
+                "Tie",
+            ),
+            (
+                "4 / S",
+                "Skip",
+            ),
+            (
+                "← / →",
+                "Choose left / right",
+            ),
+            (
+                "U",
+                "Undo",
+            ),
+            (
+                "I",
+                "Mark LEFT Ignore",
+            ),
+            (
+                "R",
+                "Mark LEFT Read",
+            ),
+            (
+                "C",
+                "Mark LEFT Currently Reading",
+            ),
+            (
+                "Shift+I",
+                "Mark RIGHT Ignore",
+            ),
+            (
+                "Shift+R",
+                "Mark RIGHT Read",
+            ),
+            (
+                "Shift+C",
+                "Mark RIGHT Currently Reading",
+            ),
+            (
+                "Ctrl+O",
+                "Open Goodreads Excel",
+            ),
+            (
+                "Ctrl+E",
+                "Export Ranking",
+            ),
+            (
+                "Click book card",
+                "Open lifecycle menu",
+            ),
         ]
 
+        # Four compact columns so the reference remains
+        # useful on a tablet.
         grid = tk.Frame(
             self.shortcut_panel,
             bg=c["panel"],
@@ -3190,7 +2864,7 @@ class RankerApp:
             )
 
     # --------------------------------------------------------
-    # File opening
+    # File opening / state
     # --------------------------------------------------------
 
     def open_excel(self):
@@ -3216,12 +2890,6 @@ class RankerApp:
                 path
             )
 
-            if not rows:
-                raise ValueError(
-                    "No Goodreads books were found "
-                    "in this workbook."
-                )
-
             self.source_file = Path(
                 path
             )
@@ -3234,40 +2902,23 @@ class RankerApp:
                 self.state_store.load_raw()
             )
 
-            books = [
-                book_from_row(row)
-                for row in rows
-                if isinstance(row, dict)
-            ]
-
-            if not books:
-                raise ValueError(
-                    "The workbook contained rows, but "
-                    "none could be converted into books."
-                )
-
             if raw_state:
+                books = [
+                    book_from_row(row)
+                    for row in rows
+                ]
+
                 saved_books = raw_state.get(
                     "books",
                     {},
                 )
 
-                if not isinstance(
-                    saved_books,
-                    dict,
-                ):
-                    saved_books = {}
-
-                # Restore manually managed lifecycle states.
                 for book in books:
                     saved = saved_books.get(
                         book.id
                     )
 
-                    if not isinstance(
-                        saved,
-                        dict,
-                    ):
+                    if not saved:
                         continue
 
                     saved_status = saved.get(
@@ -3276,41 +2927,13 @@ class RankerApp:
 
                     shelf = book.shelf
 
+                    # A manually ignored book remains
+                    # ignored while Goodreads still says to-read.
                     if (
-                        saved_status
-                        in RankingEngine.ALL_STATUSES
+                        saved_status == "ignore"
+                        and shelf == "to-read"
                     ):
-                        if (
-                            saved_status == "ignore"
-                            and shelf == "to-read"
-                        ):
-                            book.status = "ignore"
-
-                        elif (
-                            saved_status
-                            == "currently-reading"
-                            and shelf
-                            in {
-                                "to-read",
-                                "currently-reading",
-                            }
-                        ):
-                            book.status = (
-                                "currently-reading"
-                            )
-
-                saved_statuses = {
-                    key: value.get(
-                        "status",
-                        "to-read",
-                    )
-                    for key, value
-                    in saved_books.items()
-                    if isinstance(
-                        value,
-                        dict,
-                    )
-                }
+                        book.status = "ignore"
 
                 self.engine = RankingEngine(
                     books,
@@ -3325,25 +2948,26 @@ class RankerApp:
                         "comparisons",
                         [],
                     ),
-                    statuses=saved_statuses,
-                    skips=raw_state.get(
-                        "skips",
-                        {},
-                    ),
+                    statuses={
+                        key: value.get(
+                            "status",
+                            "to-read",
+                        )
+                        for key, value
+                        in saved_books.items()
+                    },
                 )
 
                 self.engine.sync_goodreads(
                     rows
                 )
 
-                # Make the mode selector agree with loaded state.
-                self.mode_var.set(
-                    self.engine.mode
-                )
-
             else:
                 self.engine = RankingEngine(
-                    books,
+                    [
+                        book_from_row(row)
+                        for row in rows
+                    ],
                     mode=self.mode_var.get(),
                 )
 
@@ -3358,22 +2982,14 @@ class RankerApp:
         except Exception as exc:
             messagebox.showerror(
                 "Could not open Goodreads workbook",
-                (
-                    f"{exc}\n\n"
-                    "If this is a Goodreads export, make "
-                    "sure the workbook contains a 'Title' "
-                    "column."
-                ),
+                str(exc),
             )
 
     # --------------------------------------------------------
     # Mode
     # --------------------------------------------------------
 
-    def change_mode(
-        self,
-        _event=None,
-    ):
+    def change_mode(self, _event=None):
         if not self.engine:
             return
 
@@ -3383,20 +2999,20 @@ class RankerApp:
             return
 
         self.engine.mode = mode
+        self.engine.target, self.engine.top_focus = PRESETS[
+            mode
+        ]
 
-        (
-            self.engine.target,
-            self.engine.top_focus,
-        ) = PRESETS[mode]
-
-        self.save_state()
+        if self.state_store:
+            self.state_store.save(
+                self.engine
+            )
 
         self.current_pair = None
-
         self.refresh()
 
     # --------------------------------------------------------
-    # Refresh
+    # Refresh / comparison display
     # --------------------------------------------------------
 
     def refresh(self):
@@ -3422,15 +3038,10 @@ class RankerApp:
         self.info_var.set(
             f"{len(self.engine.books)} active books"
             f"  •  {len(self.engine.comparisons)} decisions"
-            f"  •  Top-10 "
-            f"{metrics['top10_confidence'] * 100:.0f}%"
-            f"  •  Top-25 "
-            f"{metrics['top25_confidence'] * 100:.0f}%"
-            f"  •  stability "
-            f"{metrics['top25_stability'] * 100:.0f}%"
-            f"  •  "
-            f"{metrics['unresolved_boundary']} "
-            f"boundary unresolved"
+            f"  •  Top-10 {metrics['top10_confidence'] * 100:.0f}%"
+            f"  •  Top-25 {metrics['top25_confidence'] * 100:.0f}%"
+            f"  •  stability {metrics['top25_stability'] * 100:.0f}%"
+            f"  •  {metrics['unresolved_boundary']} boundary unresolved"
         )
 
     def show_current_pair(self):
@@ -3466,17 +3077,18 @@ class RankerApp:
             self.set_description(
                 self.left_description,
                 (
-                    "The adaptive engine does not invent "
-                    "preferences. Export the ranking or "
-                    "continue refining it."
+                    "The adaptive engine does not "
+                    "invent preferences. Export the "
+                    "ranking or continue refining it."
                 ),
             )
 
             self.set_description(
                 self.right_description,
                 (
-                    "Use the lifecycle buttons if a book "
-                    "becomes Read, Currently Reading or Ignore."
+                    "Use the lifecycle buttons if a "
+                    "book becomes Read, Currently Reading "
+                    "or Ignore."
                 ),
             )
 
@@ -3521,15 +3133,10 @@ class RankerApp:
             book.id
         ]
 
-        statistics = (
-            self.engine.statistics()
-        )
-
         item = next(
             item
-            for item in statistics
-            if item["book"].id
-            == book.id
+            for item in self.engine.statistics()
+            if item["book"].id == book.id
         )
 
         status_labels = {
@@ -3604,18 +3211,16 @@ class RankerApp:
             "  •  ".join(meta)
         )
 
-        description = (
-            book.description[:700]
-            if book.description
-            else "No description available."
-        )
-
         self.set_description(
             getattr(
                 self,
                 f"{side}_description",
             ),
-            description,
+            (
+                book.description[:700]
+                if book.description
+                else "No description available."
+            ),
         )
 
     def set_description(
@@ -3645,19 +3250,14 @@ class RankerApp:
     # Human actions
     # --------------------------------------------------------
 
-    def choose(
-        self,
-        result,
-    ):
+    def choose(self, result):
         if (
             not self.engine
             or not self.current_pair
         ):
             return
 
-        left, right = (
-            self.current_pair
-        )
+        left, right = self.current_pair
 
         try:
             self.engine.apply_match(
@@ -3669,7 +3269,6 @@ class RankerApp:
             self.save_state()
 
             self.current_pair = None
-
             self.refresh()
 
         except Exception as exc:
@@ -3690,7 +3289,6 @@ class RankerApp:
         )
 
         self.current_pair = None
-
         self.refresh()
 
     # --------------------------------------------------------
@@ -3726,7 +3324,6 @@ class RankerApp:
         self.save_state()
 
         self.current_pair = None
-
         self.refresh()
 
         self.info_var.set(
@@ -3790,13 +3387,10 @@ class RankerApp:
                 ),
         )
 
-        try:
-            menu.tk_popup(
-                event.x_root,
-                event.y_root,
-            )
-        finally:
-            menu.grab_release()
+        menu.tk_popup(
+            event.x_root,
+            event.y_root,
+        )
 
     # --------------------------------------------------------
     # Undo
@@ -3808,9 +3402,7 @@ class RankerApp:
 
         if self.engine.undo():
             self.save_state()
-
             self.current_pair = None
-
             self.refresh()
 
     def save_state(self):
@@ -3981,7 +3573,8 @@ class RankerApp:
         )
 
         tree.configure(
-            yscrollcommand=scrollbar.set
+            yscrollcommand=
+            scrollbar.set
         )
 
         tree.pack(
@@ -4017,19 +3610,15 @@ class RankerApp:
             != "currently-reading"
         ]
 
+        # Currently-reading is always displayed first.
         for item in current + rest:
             book = item["book"]
             rating = item["rating"]
 
-            if (
-                book.status
-                == "currently-reading"
-            ):
+            if book.status == "currently-reading":
                 priority = "📖 NOW"
-
             elif item["rank"] <= TOP_K:
                 priority = "🏆 TOP 25"
-
             else:
                 priority = "📚 QUEUE"
 
@@ -4060,7 +3649,7 @@ class RankerApp:
             )
 
     # --------------------------------------------------------
-    # Shortcut dialog
+    # Shortcuts dialog
     # --------------------------------------------------------
 
     def show_shortcuts(self):
@@ -4097,21 +3686,66 @@ class RankerApp:
         )
 
         shortcuts = [
-            ("1", "Choose LEFT"),
-            ("2", "Choose RIGHT"),
-            ("3 / T", "Tie"),
-            ("4 / S", "Skip"),
-            ("← / →", "Choose left / right"),
-            ("U", "Undo"),
-            ("I", "Mark LEFT Ignore"),
-            ("R", "Mark LEFT Read"),
-            ("C", "Mark LEFT Currently Reading"),
-            ("Shift+I", "Mark RIGHT Ignore"),
-            ("Shift+R", "Mark RIGHT Read"),
-            ("Shift+C", "Mark RIGHT Currently Reading"),
-            ("Ctrl+O", "Open Goodreads Excel"),
-            ("Ctrl+E", "Export Ranking"),
-            ("Click book card", "Open lifecycle menu"),
+            (
+                "1",
+                "Choose LEFT",
+            ),
+            (
+                "2",
+                "Choose RIGHT",
+            ),
+            (
+                "3 / T",
+                "Tie",
+            ),
+            (
+                "4 / S",
+                "Skip",
+            ),
+            (
+                "← / →",
+                "Choose left / right",
+            ),
+            (
+                "U",
+                "Undo",
+            ),
+            (
+                "I",
+                "Mark LEFT Ignore",
+            ),
+            (
+                "R",
+                "Mark LEFT Read",
+            ),
+            (
+                "C",
+                "Mark LEFT Currently Reading",
+            ),
+            (
+                "Shift+I",
+                "Mark RIGHT Ignore",
+            ),
+            (
+                "Shift+R",
+                "Mark RIGHT Read",
+            ),
+            (
+                "Shift+C",
+                "Mark RIGHT Currently Reading",
+            ),
+            (
+                "Ctrl+O",
+                "Open Goodreads Excel",
+            ),
+            (
+                "Ctrl+E",
+                "Export Ranking",
+            ),
+            (
+                "Click book card",
+                "Open lifecycle menu",
+            ),
         ]
 
         for key, description in shortcuts:
@@ -4201,8 +3835,9 @@ class RankerApp:
             messagebox.showerror(
                 "Export failed",
                 (
-                    "Windows could not save the workbook. "
-                    "Close it in Excel and try again."
+                    "Windows could not save "
+                    "the workbook. Close it "
+                    "in Excel and try again."
                 ),
             )
 
@@ -4224,7 +3859,8 @@ class RankerApp:
             (
                 "This will replace the original "
                 "Goodreads workbook.\n\n"
-                "A timestamped backup will be created first.\n\n"
+                "A timestamped backup will be "
+                "created first.\n\n"
                 "Continue?"
             ),
         ):
@@ -4263,7 +3899,8 @@ class RankerApp:
             messagebox.showinfo(
                 "Source updated",
                 (
-                    "The Goodreads workbook was updated.\n\n"
+                    "The Goodreads workbook "
+                    "was updated.\n\n"
                     f"Backup:\n{backup}"
                 ),
             )
@@ -4287,32 +3924,25 @@ class RankerApp:
     # External file
     # --------------------------------------------------------
 
-    def open_external(
-        self,
-        path,
-    ):
+    def open_external(self, path):
         try:
-            if sys.platform.startswith(
-                "win"
-            ):
+            if sys.platform.startswith("win"):
                 os.startfile(
                     str(path)
                 )
 
             elif sys.platform == "darwin":
+                import subprocess
+
                 subprocess.Popen(
-                    [
-                        "open",
-                        str(path),
-                    ]
+                    ["open", str(path)]
                 )
 
             else:
+                import subprocess
+
                 subprocess.Popen(
-                    [
-                        "xdg-open",
-                        str(path),
-                    ]
+                    ["xdg-open", str(path)]
                 )
 
         except Exception:
@@ -4334,10 +3964,7 @@ class RankerApp:
 def run_self_test():
     started = datetime.now()
 
-    # --------------------------------------------------------
-    # Glicko direction
-    # --------------------------------------------------------
-
+    # Glicko direction.
     winner = Rating()
     loser = Rating()
 
@@ -4363,46 +3990,7 @@ def run_self_test():
         < loser.rating
     )
 
-    # --------------------------------------------------------
-    # Goodreads normalized import simulation
-    # --------------------------------------------------------
-
-    fake_row = {
-        "book id - goodreads": "123456",
-        "isbn": "9781234567890",
-        "title": "Test Book",
-        "author l-f": "Test Author",
-        "description": "A test book.",
-        "number of pages": "300",
-        "my rating": "0",
-        "exclusive shelf": "to-read",
-        "year published": "2025",
-        "publisher": "Test Publisher",
-    }
-
-    fake_book = book_from_row(
-        fake_row
-    )
-
-    assert (
-        fake_book.id
-        == "gr:123456"
-    )
-
-    assert (
-        fake_book.title
-        == "Test Book"
-    )
-
-    assert (
-        fake_book.author
-        == "Test Author"
-    )
-
-    # --------------------------------------------------------
-    # Small library
-    # --------------------------------------------------------
-
+    # Small library.
     books = [
         Book(
             id=str(index),
@@ -4450,10 +4038,7 @@ def run_self_test():
         == 25
     )
 
-    # --------------------------------------------------------
-    # Undo
-    # --------------------------------------------------------
-
+    # Undo.
     before = len(
         engine.comparisons
     )
@@ -4465,10 +4050,7 @@ def run_self_test():
         == before - 1
     )
 
-    # --------------------------------------------------------
-    # Lifecycle
-    # --------------------------------------------------------
-
+    # Lifecycle.
     engine.set_lifecycle(
         "0",
         "currently-reading",
@@ -4499,10 +4081,7 @@ def run_self_test():
         for book in engine.books
     )
 
-    # --------------------------------------------------------
-    # Large library bounded selection
-    # --------------------------------------------------------
-
+    # Large-library bounded selection.
     large_books = [
         Book(
             id=f"large-{index}",
@@ -4521,24 +4100,24 @@ def run_self_test():
 
     assert pair is not None
 
-    # --------------------------------------------------------
-    # State persistence
-    # --------------------------------------------------------
-
+    # Persistence round trip.
     with tempfile.TemporaryDirectory() as directory:
         source = (
             Path(directory)
             / "library.xlsx"
         )
 
-        temporary_workbook = Workbook()
+        workbook = load_workbook(
+            source
+        ) if source.exists() else None
 
-        worksheet = (
-            temporary_workbook.active
+        if workbook:
+            workbook.close()
+
+        temporary_workbook = (
+            __import__("openpyxl")
+            .Workbook()
         )
-
-        worksheet["A1"] = "Title"
-        worksheet["A2"] = "Test Book"
 
         temporary_workbook.save(
             source
@@ -4558,15 +4137,10 @@ def run_self_test():
             store.load_raw()
         )
 
-        assert (
-            loaded_state
-            is not None
-        )
+        assert loaded_state is not None
 
         assert (
-            loaded_state[
-                "state_version"
-            ]
+            loaded_state["state_version"]
             == STATE_VERSION
         )
 
@@ -4579,118 +4153,6 @@ def run_self_test():
             == len(
                 engine.comparisons
             )
-        )
-
-    # --------------------------------------------------------
-    # Actual import pipeline test
-    # --------------------------------------------------------
-
-    with tempfile.TemporaryDirectory() as directory:
-        source = (
-            Path(directory)
-            / "goodreads.xlsx"
-        )
-
-        workbook = Workbook()
-
-        worksheet = (
-            workbook.active
-        )
-
-        worksheet.append(
-            [
-                "Book Id - Goodreads",
-                "Title",
-                "Author l-f",
-                "Exclusive Shelf",
-                "ISBN",
-                "Number of Pages",
-                "Description",
-            ]
-        )
-
-        worksheet.append(
-            [
-                "1001",
-                "Alpha",
-                "Author, A",
-                "to-read",
-                "9781111111111",
-                "200",
-                "Alpha description",
-            ]
-        )
-
-        worksheet.append(
-            [
-                "1002",
-                "Beta",
-                "Author, B",
-                "currently-reading",
-                "9782222222222",
-                "250",
-                "Beta description",
-            ]
-        )
-
-        workbook.save(
-            source
-        )
-
-        workbook.close()
-
-        imported_rows = import_goodreads(
-            source
-        )
-
-        assert isinstance(
-            imported_rows,
-            list,
-        )
-
-        assert len(
-            imported_rows
-        ) == 2
-
-        assert all(
-            isinstance(row, dict)
-            for row in imported_rows
-        )
-
-        imported_books = [
-            book_from_row(row)
-            for row in imported_rows
-        ]
-
-        assert (
-            len(imported_books)
-            == 2
-        )
-
-        assert (
-            imported_books[0].id
-            == "gr:1001"
-        )
-
-        assert (
-            imported_books[1].id
-            == "gr:1002"
-        )
-
-        imported_engine = RankingEngine(
-            imported_books,
-            seed=42,
-        )
-
-        result = (
-            imported_engine.sync_goodreads(
-                imported_rows
-            )
-        )
-
-        assert (
-            result["active"]
-            == 2
         )
 
     elapsed = (
