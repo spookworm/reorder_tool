@@ -33,8 +33,7 @@ if errorlevel 1 (
         echo.
         echo Could not install openpyxl.
         echo.
-        echo If your internet connection is unavailable,
-        echo install openpyxl manually and run ranker.py.
+        echo Please check your internet connection and try again.
         echo.
         pause
         exit /b 1
@@ -46,7 +45,6 @@ echo Starting Goodreads To-Read Ranker...
 echo.
 
 .venv\Scripts\python.exe ranker.py
-
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
