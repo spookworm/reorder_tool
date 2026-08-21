@@ -555,7 +555,6 @@ class RankingEngine:
 
     ACTIVE_STATUSES = {
         "to-read",
-        "currently-reading",
     }
 
     ALL_STATUSES = {
