@@ -30,7 +30,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 # ============================================================
 
 APP_NAME = "Goodreads To-Read Ranker"
-APP_VERSION = "6.1.0-SHELF-SEGMENTED"
+APP_VERSION = "6.0.1-FIXED"
 STATE_VERSION = 9
 
 TOP_K = 25
@@ -824,12 +824,11 @@ class RankingEngine:
 
         Read books leave the active ranking.
 
-        Currently-reading remains active and is a separate comparison
-        cohort: it is only compared with other currently-reading books.
+        Currently-reading remains active.
 
-        To-read books are compared only with other to-read books.
-
-        Ignored books remain ignored even if Goodreads says to-read.
+        Ignored books remain ignored until the user explicitly
+        changes their lifecycle. Goodreads is treated as source data,
+        not as the authority over a manual lifecycle decision.
 
         Removed records are retained in the internal library so
         previous identity/history is not silently destroyed.
@@ -883,6 +882,15 @@ class RankingEngine:
             elif shelf == "read":
                 shelf = "read"
 
+            elif shelf == "ignore":
+                shelf = "ignore"
+
+            else:
+                # Goodreads may contain custom shelves. They are retained
+                # in goodreads_fields, but are not lifecycle states unless
+                # the application explicitly recognizes them.
+                shelf = shelf or "to-read"
+
             old_book = old_library.get(
                 book_id
             )
@@ -890,11 +898,11 @@ class RankingEngine:
             if old_book:
                 old_status = old_book.status
 
-                # Manual lifecycle decisions take precedence over
-                # the Goodreads source shelf.
+                # Manual lifecycle decisions are authoritative. In
+                # particular, an ignored book must not be resurrected by
+                # a later Goodreads export that still says to-read.
                 if old_status == "ignore":
                     status = "ignore"
-
                 else:
                     status = (
                         shelf
@@ -911,8 +919,8 @@ class RankingEngine:
 
                 added.append(book_id)
 
-            # The application lifecycle is authoritative.
-            # Keep the shelf representation synchronized with it.
+            # The application lifecycle is authoritative. Keep the Book
+            # shelf and normalized source field synchronized with it.
             if status in self.ALL_STATUSES:
                 shelf = status
 
@@ -921,9 +929,6 @@ class RankingEngine:
                 for key, value in row.items()
             }
 
-            # Keep the normalized source record consistent with the
-            # application's authoritative lifecycle. This matters for
-            # Ignore and Currently Reading across later imports.
             goodreads_fields[
                 "exclusive shelf"
             ] = shelf
@@ -1085,51 +1090,8 @@ class RankingEngine:
     # Active learning
     # --------------------------------------------------------
 
-    def _pairing_pool(self):
-        """Return the active shelf cohort eligible for the next comparison."""
-        currently_reading = [
-            book.id
-            for book in self.books
-            if book.status == "currently-reading"
-        ]
-
-        # Currently-reading is a hard comparison boundary. If there are
-        # two or more currently-reading books, the next comparison MUST
-        # come from that cohort and may not use any to-read book.
-        if len(currently_reading) >= 2:
-            return currently_reading
-
-        to_read = [
-            book.id
-            for book in self.books
-            if book.status == "to-read"
-        ]
-
-        # A single currently-reading book cannot be compared to a to-read
-        # book, so allow the to-read cohort to continue independently.
-        if len(to_read) >= 2:
-            return to_read
-
-        return []
-
-    def _same_pairing_cohort(self, left, right):
-        """Return True only when both books belong to the same active shelf."""
-        if left not in self.library or right not in self.library:
-            return False
-
-        left_status = self.library[left].status
-        right_status = self.library[right].status
-
-        return (
-            left_status == right_status
-            and left_status in self.ACTIVE_STATUSES
-        )
-
     def choose_pair(self):
-        # Comparison is shelf-segmented: currently-reading books can only
-        # be compared with currently-reading books, and to-read books can
-        # only be compared with to-read books.
-        ids = self._pairing_pool()
+        ids = self.active_ids()
 
         if len(ids) < 2:
             return None
@@ -1141,15 +1103,9 @@ class RankingEngine:
             for item in stats
         }
 
-        # Restrict every candidate pool to the selected shelf cohort.
-        # This is the critical guard that prevents a currently-reading
-        # book from leaking into a to-read comparison (or vice versa).
-        allowed_ids = set(ids)
-
         ordered = [
             item["book"].id
             for item in stats
-            if item["book"].id in allowed_ids
         ]
 
         elite_size = min(
@@ -1391,12 +1347,6 @@ class RankingEngine:
                 "A book cannot be compared with itself."
             )
 
-        if not self._same_pairing_cohort(left, right):
-            raise ValueError(
-                "Books can only be compared within the same active "
-                "Exclusive Shelf cohort."
-            )
-
         pair = self.pair_key(
             left,
             right,
@@ -1484,28 +1434,18 @@ class RankingEngine:
 
         # Always update the internal lifecycle status.
         book.status = status
+
         self.statuses[book_id] = status
 
-        # Keep the Book shelf and Goodreads source data synchronized.
-        if status == "ignore":
-            book.shelf = "ignore"
+        # The application lifecycle is authoritative. Goodreads is only
+        # the source for metadata; its exclusive-shelf field is kept in
+        # sync with the lifecycle state used by the ranker.
+        book.shelf = status
 
-            if not isinstance(book.goodreads_fields, dict):
-                book.goodreads_fields = {}
+        if not isinstance(book.goodreads_fields, dict):
+            book.goodreads_fields = {}
 
-            book.goodreads_fields["exclusive shelf"] = "ignore"
-
-        elif status in {
-            "to-read",
-            "currently-reading",
-            "read",
-        }:
-            book.shelf = status
-
-            if not isinstance(book.goodreads_fields, dict):
-                book.goodreads_fields = {}
-
-            book.goodreads_fields["exclusive shelf"] = status
+        book.goodreads_fields["exclusive shelf"] = status
 
         self._sync_books()
         self._replay()
@@ -3588,30 +3528,25 @@ class RankerApp:
                         "status"
                     )
 
-                    shelf = book.shelf
-
                     if (
                         saved_status
                         in RankingEngine.ALL_STATUSES
                     ):
-                        if (
-                            saved_status == "ignore"
-                            and shelf == "to-read"
-                        ):
-                            book.status = "ignore"
+                        # Restore the application's lifecycle state as the
+                        # authority, regardless of what the source export
+                        # currently says.
+                        book.status = saved_status
+                        book.shelf = saved_status
 
-                        elif (
-                            saved_status
-                            == "currently-reading"
-                            and shelf
-                            in {
-                                "to-read",
-                                "currently-reading",
-                            }
+                        if not isinstance(
+                            book.goodreads_fields,
+                            dict,
                         ):
-                            book.status = (
-                                "currently-reading"
-                            )
+                            book.goodreads_fields = {}
+
+                        book.goodreads_fields[
+                            "exclusive shelf"
+                        ] = saved_status
 
                 saved_statuses = {
                     key: value.get(
@@ -4224,14 +4159,17 @@ class RankerApp:
                 shelf = "read"
             elif shelf == "to-read":
                 shelf = "to-read"
+            elif shelf == "ignore":
+                shelf = "ignore"
 
             if shelf in self.engine.ALL_STATUSES:
+                # Editing the lifecycle field is an explicit user action,
+                # so it is allowed to change an ignored book back to
+                # to-read (or another lifecycle state).
                 book.shelf = shelf
-
-                # Do not accidentally resurrect an ignored book
-                # simply because its Goodreads shelf says to-read.
-                if book.status != "ignore":
-                    book.status = shelf
+                book.status = shelf
+                fields["exclusive shelf"] = shelf
+                book.goodreads_fields["exclusive shelf"] = shelf
 
                 self.engine.statuses[
                     book.id
@@ -5427,108 +5365,6 @@ def run_self_test():
     )
 
     # --------------------------------------------------------
-    # Shelf-segmented comparison
-    # --------------------------------------------------------
-    segmented_books = [
-        Book(
-            id="cr-1",
-            title="Currently Reading 1",
-            shelf="currently-reading",
-            status="currently-reading",
-        ),
-        Book(
-            id="cr-2",
-            title="Currently Reading 2",
-            shelf="currently-reading",
-            status="currently-reading",
-        ),
-        Book(
-            id="tr-1",
-            title="To Read 1",
-            shelf="to-read",
-            status="to-read",
-        ),
-        Book(
-            id="tr-2",
-            title="To Read 2",
-            shelf="to-read",
-            status="to-read",
-        ),
-    ]
-
-    segmented_engine = RankingEngine(
-        segmented_books,
-        seed=99,
-    )
-
-    # When there are at least two currently-reading books, only that
-    # cohort is eligible for comparison.
-    segmented_pair = segmented_engine.choose_pair()
-    assert segmented_pair is not None
-    assert segmented_engine._same_pairing_cohort(
-        *segmented_pair
-    )
-    assert {
-        segmented_engine.library[book_id].status
-        for book_id in segmented_pair
-    } == {"currently-reading"}
-
-    segmented_engine.apply_match(
-        segmented_pair[0],
-        segmented_pair[1],
-        "left",
-    )
-
-    # The only currently-reading pair has now been played, so the selector
-    # must not cross over to to-read merely to find another pair.
-    assert segmented_engine.choose_pair() is None
-
-    # A separate to-read cohort still works normally.
-    to_read_engine = RankingEngine(
-        [
-            segmented_books[2],
-            segmented_books[3],
-        ],
-        seed=100,
-    )
-    to_read_pair = to_read_engine.choose_pair()
-    assert to_read_pair is not None
-    assert {
-        to_read_engine.library[book_id].status
-        for book_id in to_read_pair
-    } == {"to-read"}
-
-    # A single currently-reading book is never paired with a to-read book.
-    single_current_engine = RankingEngine(
-        [
-            segmented_books[0],
-            segmented_books[2],
-            segmented_books[3],
-        ],
-        seed=101,
-    )
-    single_current_pair = single_current_engine.choose_pair()
-    assert single_current_pair is not None
-    assert {
-        single_current_engine.library[book_id].status
-        for book_id in single_current_pair
-    } == {"to-read"}
-
-    # Direct application of a cross-shelf comparison is rejected too.
-    try:
-        single_current_engine.apply_match(
-            "cr-1",
-            "tr-1",
-            "left",
-        )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError(
-            "Cross-shelf comparisons must be rejected."
-        )
-
-    # --------------------------------------------------------
     # Lifecycle
     # --------------------------------------------------------
 
@@ -5547,6 +5383,35 @@ def run_self_test():
         "ignore",
     )
 
+    assert all(
+        book.id != "1"
+        for book in engine.books
+    )
+
+    ignored = engine.library["1"]
+    assert ignored.status == "ignore"
+    assert ignored.shelf == "ignore"
+    assert ignored.goodreads_fields[
+        "exclusive shelf"
+    ] == "ignore"
+
+    # A fresh Goodreads export saying to-read must not resurrect an
+    # application-level ignore decision.
+    ignored_row = {
+        "book id - goodreads": "1",
+        "title": "Book 1",
+        "author l-f": "Author 1",
+        "exclusive shelf": "to-read",
+    }
+
+    engine.sync_goodreads([ignored_row])
+
+    ignored = engine.library["1"]
+    assert ignored.status == "ignore"
+    assert ignored.shelf == "ignore"
+    assert ignored.goodreads_fields[
+        "exclusive shelf"
+    ] == "ignore"
     assert all(
         book.id != "1"
         for book in engine.books
