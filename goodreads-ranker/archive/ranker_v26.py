@@ -316,41 +316,6 @@ def glicko_update(
 
 
 # ============================================================
-# SERIES HELPERS
-# ============================================================
-
-def series_name(book):
-    fields = getattr(book, "goodreads_fields", {}) or {}
-    value = fields.get("series", "")
-    return normalize(value).strip()
-
-
-def series_number(book):
-    fields = getattr(book, "goodreads_fields", {}) or {}
-    value = normalize(fields.get("series-#", "")).strip()
-
-    if not value:
-        return None
-
-    try:
-        number = int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-    return number
-
-
-def series_key(book):
-    name = series_name(book)
-    number = series_number(book)
-
-    if not name or number is None:
-        return None
-
-    return (name.casefold(), number)
-
-
-# ============================================================
 # BOOK MODEL
 # ============================================================
 
@@ -590,7 +555,6 @@ class RankingEngine:
 
     ACTIVE_STATUSES = {
         "to-read",
-        "currently-reading",
     }
 
     ALL_STATUSES = {
@@ -1021,51 +985,14 @@ class RankingEngine:
         if not self.books:
             return []
 
-        def ranking_key(book):
-            rating = self.ratings[book.id].rating
-            name = series_name(book)
-            number = series_number(book)
-
-            # Series order is a hard ordering constraint within a single
-            # series: a smaller valid Series-# always appears above a
-            # larger valid Series-# for that same Series. Outside the same
-            # series, human preference/rating remains the ranking signal.
-            return (
-                rating,
-                name.casefold() if name else "",
-                -number if name and number is not None else float("-inf"),
-            )
-
-        # First sort by human evidence, then repair ordering inside each
-        # series so that the lowest valid Series-# is always first.
         ranked = sorted(
             self.books,
-            key=lambda book: self.ratings[book.id].rating,
+            key=lambda book:
+                self.ratings[
+                    book.id
+                ].rating,
             reverse=True,
         )
-
-        groups = {}
-        for book in ranked:
-            name = series_name(book)
-            if name and series_number(book) is not None:
-                groups.setdefault(name.casefold(), []).append(book)
-
-        for group_name, members in groups.items():
-            ordered_members = sorted(
-                members,
-                key=lambda book: (
-                    series_number(book),
-                    -self.ratings[book.id].rating,
-                ),
-            )
-            member_positions = {book.id: index for index, book in enumerate(ordered_members)}
-            ranked_positions = {book.id: index for index, book in enumerate(ranked) if book.id in member_positions}
-
-            # Move members into the positions occupied by the series members,
-            # preserving the rest of the global ranking.
-            positions = sorted(ranked_positions.values())
-            for position, member in zip(positions, ordered_members):
-                ranked[position] = member
 
         total = len(ranked)
         output = []
@@ -1223,82 +1150,6 @@ class RankingEngine:
         }
 
         allowed_ids = set(ids)
-
-        # ----------------------------------------------------
-        # SERIES ORDER PRIORITY
-        # ----------------------------------------------------
-        # When a cohort contains multiple books from the same series,
-        # always work through the lowest available Series-# first. The
-        # comparison itself is still a human decision; series metadata only
-        # determines which comparison gets presented first.
-        series_groups = {}
-        for book_id in ids:
-            book = self.library[book_id]
-            name = series_name(book)
-            number = series_number(book)
-            if name and number is not None:
-                series_groups.setdefault(name.casefold(), []).append(book)
-
-        series_candidates = []
-
-        for members in series_groups.values():
-            members.sort(
-                key=lambda book: (
-                    series_number(book),
-                    -self.ratings[book.id].rating,
-                )
-            )
-
-            # Compare the earliest numbered book with the next numbered
-            # instance. If there is a gap in numbering, the next available
-            # larger number is used. Duplicate Series-# values are resolved
-            # by existing rating/uncertainty logic.
-            for index in range(len(members) - 1):
-                left_book = members[index]
-                right_book = members[index + 1]
-
-                if series_number(left_book) == series_number(right_book):
-                    continue
-
-                left = left_book.id
-                right = right_book.id
-                pair = self.pair_key(left, right)
-
-                if pair in self.played or self.skips.get(pair, 0) > 0:
-                    continue
-
-                if not self._same_pairing_cohort(left, right):
-                    continue
-
-                series_candidates.append(pair)
-
-        if series_candidates:
-            def series_priority(pair):
-                left, right = pair
-                left_book = self.library[left]
-                right_book = self.library[right]
-                left_number = series_number(left_book)
-                right_number = series_number(right_book)
-
-                return (
-                    -min(left_number, right_number),
-                    self.ratings[left].comparisons
-                    + self.ratings[right].comparisons,
-                    self.ratings[left].rd
-                    + self.ratings[right].rd,
-                )
-
-            selected = max(
-                series_candidates,
-                key=series_priority,
-            )
-
-            # Always present the lower-numbered series item on the left so
-            # the UI has a stable, readable series progression.
-            left, right = selected
-            if series_number(self.library[left]) > series_number(self.library[right]):
-                return (right, left)
-            return selected
 
         # ----------------------------------------------------
         # NEW-BOOK PRIORITY
@@ -4209,8 +4060,6 @@ class RankerApp:
             ("Publisher", "publisher"),
             ("ISBN", "isbn"),
             ("DOI", "doi"),
-            ("Series", "series"),
-            ("Series-#", "series-#"),
             ("Description", "description"),
         ]
 
@@ -4233,11 +4082,6 @@ class RankerApp:
                     "publisher": book.publisher,
                     "isbn": book.isbn,
                     "book id - goodreads": book.goodreads_id,
-                    "series": series_name(book),
-                    "series-#": (
-                        "" if series_number(book) is None
-                        else str(series_number(book))
-                    ),
                     "description": book.description,
                 }
 
@@ -4650,11 +4494,6 @@ class RankerApp:
                     "publisher": book.publisher,
                     "isbn": book.isbn,
                     "book id - goodreads": book.goodreads_id,
-                    "series": series_name(book),
-                    "series-#": (
-                        "" if series_number(book) is None
-                        else str(series_number(book))
-                    ),
                     "description": book.description,
                 }
                 value = fallback.get(key, "")
@@ -5857,49 +5696,6 @@ def run_self_test():
         )
 
     # --------------------------------------------------------
-    # Series ordering test
-    # --------------------------------------------------------
-
-    series_books = [
-        Book(
-            id="s3",
-            title="Series 3",
-            shelf="to-read",
-            status="to-read",
-            goodreads_fields={"series": "Saga", "series-#": "3"},
-        ),
-        Book(
-            id="s1",
-            title="Series 1",
-            shelf="to-read",
-            status="to-read",
-            goodreads_fields={"series": "Saga", "series-#": "1"},
-        ),
-        Book(
-            id="s2",
-            title="Series 2",
-            shelf="to-read",
-            status="to-read",
-            goodreads_fields={"series": "Saga", "series-#": "2"},
-        ),
-    ]
-
-    series_engine = RankingEngine(
-        series_books,
-        seed=7,
-    )
-    series_pair = series_engine.choose_pair()
-    assert series_pair == ("s1", "s2"), series_pair
-
-    series_stats = series_engine.statistics()
-    saga_order = [
-        item["book"].id
-        for item in series_stats
-        if series_name(item["book"]).casefold() == "saga"
-    ]
-    assert saga_order == ["s1", "s2", "s3"], saga_order
-
-    # --------------------------------------------------------
     # Actual import pipeline test
     # --------------------------------------------------------
 
@@ -5918,8 +5714,6 @@ def run_self_test():
         worksheet.append(
             [
                 "Book Id - Goodreads",
-                "Series",
-                "Series-#",
                 "Title",
                 "Author l-f",
                 "Exclusive Shelf",
@@ -5932,8 +5726,6 @@ def run_self_test():
         worksheet.append(
             [
                 "1001",
-                "Example Series",
-                "1",
                 "Alpha",
                 "Author, A",
                 "to-read",
@@ -5946,8 +5738,6 @@ def run_self_test():
         worksheet.append(
             [
                 "1002",
-                "Example Series",
-                "2",
                 "Beta",
                 "Author, B",
                 "currently-reading",
