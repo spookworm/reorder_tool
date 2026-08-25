@@ -590,6 +590,7 @@ class RankingEngine:
 
     ACTIVE_STATUSES = {
         "to-read",
+        "currently-reading",
     }
 
     ALL_STATUSES = {
@@ -865,9 +866,6 @@ class RankingEngine:
 
         Ignored books remain ignored even if Goodreads says to-read.
 
-        Imported series order is recorded as real ranking evidence: for
-        #1, #2, #3 the engine records #1 > #2 and #2 > #3.
-
         Removed records are retained in the internal library so
         previous identity/history is not silently destroyed.
         """
@@ -1009,22 +1007,10 @@ class RankingEngine:
         self._sync_books()
         self._replay()
 
-        # A series is real ranking evidence. When books arrive through an
-        # import, establish the ordered relationships as actual comparisons
-        # so they are replayed, persisted, counted, and undone exactly like
-        # human comparisons. Existing relationships are never duplicated.
-        series_comparisons_added = (
-            self._apply_series_order_comparisons()
-        )
-
-        if series_comparisons_added:
-            self._replay()
-
         return {
             "added": added,
             "removed": removed,
             "active": len(self.books),
-            "series_comparisons_added": series_comparisons_added,
         }
 
     # --------------------------------------------------------
@@ -1583,94 +1569,6 @@ class RankingEngine:
         return max(candidates, key=priority)
 
     # --------------------------------------------------------
-    # Automatic series-order evidence
-    # --------------------------------------------------------
-
-    def _apply_series_order_comparisons(self):
-        """
-        Record real ranking comparisons implied by series order.
-
-        For a series containing #1, #2, #3, this records:
-
-            #1 > #2
-            #2 > #3
-
-        These entries use the same comparison/replay machinery as human
-        comparisons and are persisted in ``self.comparisons``. Existing
-        pairs are never duplicated.
-
-        Series comparisons respect the same active-shelf cohort rule as
-        human comparisons: currently-reading books only compare with
-        currently-reading books, and to-read only with to-read.
-        """
-        groups = {}
-
-        for book in self.library.values():
-            if book.status not in self.ACTIVE_STATUSES:
-                continue
-
-            name = series_name(book)
-            number = series_number(book)
-
-            if not name or number is None:
-                continue
-
-            key = (book.status, name.casefold())
-            groups.setdefault(key, []).append(book)
-
-        existing = {
-            self.pair_key(
-                item.get("left"),
-                item.get("right"),
-            )
-            for item in self.comparisons
-            if isinstance(item, dict)
-            and item.get("left")
-            and item.get("right")
-        }
-
-        created = 0
-
-        for members in groups.values():
-            members.sort(
-                key=lambda book: (
-                    series_number(book),
-                    book.id,
-                )
-            )
-
-            for left_book, right_book in zip(
-                members,
-                members[1:],
-            ):
-                left = left_book.id
-                right = right_book.id
-                pair = self.pair_key(left, right)
-
-                if left_book.id == right_book.id:
-                    continue
-
-                if series_number(left_book) == series_number(right_book):
-                    continue
-
-                if pair in existing:
-                    continue
-
-                # The lower-numbered book is the winner. This is a genuine
-                # comparison, not a rating override.
-                self.apply_match(
-                    left,
-                    right,
-                    "left",
-                    source="series-order",
-                )
-
-                existing.add(pair)
-                created += 1
-
-        return created
-
-    # --------------------------------------------------------
     # Human actions
     # --------------------------------------------------------
 
@@ -1679,7 +1577,6 @@ class RankingEngine:
         left,
         right,
         result,
-        source="human",
     ):
         if (
             left not in self.library
@@ -1719,20 +1616,11 @@ class RankingEngine:
                 "Invalid comparison result."
             )
 
-        if source not in {
-            "human",
-            "series-order",
-        }:
-            raise ValueError(
-                "Invalid comparison source."
-            )
-
         self.comparisons.append(
             {
                 "left": left,
                 "right": right,
                 "result": result,
-                "source": source,
                 "time": now_iso(),
             }
         )
@@ -6136,8 +6024,6 @@ def run_self_test():
             == 2
         )
 
-    _test_series_import_creates_real_comparisons()
-
     elapsed = (
         datetime.now()
         - started
@@ -6168,38 +6054,6 @@ def main():
 
     return 0
 
-
-def _test_series_import_creates_real_comparisons():
-    books = [
-        Book(id="s3", title="Series 3", shelf="to-read", status="to-read",
-             goodreads_fields={"series": "Saga", "series-#": "3"}),
-        Book(id="s1", title="Series 1", shelf="to-read", status="to-read",
-             goodreads_fields={"series": "Saga", "series-#": "1"}),
-        Book(id="s2", title="Series 2", shelf="to-read", status="to-read",
-             goodreads_fields={"series": "Saga", "series-#": "2"}),
-    ]
-    engine = RankingEngine(books, seed=7)
-    created = engine._apply_series_order_comparisons()
-    assert created == 2
-    pairs = {
-        engine.pair_key(item["left"], item["right"]): item
-        for item in engine.comparisons
-    }
-    assert engine.pair_key("s1", "s2") in pairs
-    assert engine.pair_key("s2", "s3") in pairs
-    assert pairs[engine.pair_key("s1", "s2")]["result"] == "left"
-    assert pairs[engine.pair_key("s2", "s3")]["result"] == "left"
-    assert all(
-        item.get("source") == "series-order"
-        for item in engine.comparisons
-    )
-    assert engine._apply_series_order_comparisons() == 0
-
-    # Different shelves are never automatically mixed.
-    books[2].status = "currently-reading"
-    books[2].shelf = "currently-reading"
-    engine = RankingEngine(books, seed=7)
-    assert engine._apply_series_order_comparisons() == 1
 
 if __name__ == "__main__":
     try:

@@ -316,41 +316,6 @@ def glicko_update(
 
 
 # ============================================================
-# SERIES HELPERS
-# ============================================================
-
-def series_name(book):
-    fields = getattr(book, "goodreads_fields", {}) or {}
-    value = fields.get("series", "")
-    return normalize(value).strip()
-
-
-def series_number(book):
-    fields = getattr(book, "goodreads_fields", {}) or {}
-    value = normalize(fields.get("series-#", "")).strip()
-
-    if not value:
-        return None
-
-    try:
-        number = int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-    return number
-
-
-def series_key(book):
-    name = series_name(book)
-    number = series_number(book)
-
-    if not name or number is None:
-        return None
-
-    return (name.casefold(), number)
-
-
-# ============================================================
 # BOOK MODEL
 # ============================================================
 
@@ -590,7 +555,6 @@ class RankingEngine:
 
     ACTIVE_STATUSES = {
         "to-read",
-        "currently-reading",
     }
 
     ALL_STATUSES = {
@@ -1021,51 +985,14 @@ class RankingEngine:
         if not self.books:
             return []
 
-        def ranking_key(book):
-            rating = self.ratings[book.id].rating
-            name = series_name(book)
-            number = series_number(book)
-
-            # Series order is a hard ordering constraint within a single
-            # series: a smaller valid Series-# always appears above a
-            # larger valid Series-# for that same Series. Outside the same
-            # series, human preference/rating remains the ranking signal.
-            return (
-                rating,
-                name.casefold() if name else "",
-                -number if name and number is not None else float("-inf"),
-            )
-
-        # First sort by human evidence, then repair ordering inside each
-        # series so that the lowest valid Series-# is always first.
         ranked = sorted(
             self.books,
-            key=lambda book: self.ratings[book.id].rating,
+            key=lambda book:
+                self.ratings[
+                    book.id
+                ].rating,
             reverse=True,
         )
-
-        groups = {}
-        for book in ranked:
-            name = series_name(book)
-            if name and series_number(book) is not None:
-                groups.setdefault(name.casefold(), []).append(book)
-
-        for group_name, members in groups.items():
-            ordered_members = sorted(
-                members,
-                key=lambda book: (
-                    series_number(book),
-                    -self.ratings[book.id].rating,
-                ),
-            )
-            member_positions = {book.id: index for index, book in enumerate(ordered_members)}
-            ranked_positions = {book.id: index for index, book in enumerate(ranked) if book.id in member_positions}
-
-            # Move members into the positions occupied by the series members,
-            # preserving the rest of the global ranking.
-            positions = sorted(ranked_positions.values())
-            for position, member in zip(positions, ordered_members):
-                ranked[position] = member
 
         total = len(ranked)
         output = []
@@ -1198,231 +1125,26 @@ class RankingEngine:
         )
 
     def choose_pair(self):
-        """Choose the next pair using shelf-local active learning.
-
-        Priority order:
-        1. Books with zero comparisons are introduced first.
-        2. If two zero-comparison books are available, compare them together.
-        3. Otherwise compare a zero-comparison book against the strongest
-           available candidate in the same Exclusive Shelf cohort.
-        4. Once every book in the cohort has at least one comparison, use the
-           normal adaptive Glicko/top-25/boundary selector.
-
-        Currently-reading and to-read books are never mixed in a comparison.
-        """
+        # Comparison is shelf-segmented: currently-reading books can only
+        # be compared with currently-reading books, and to-read books can
+        # only be compared with to-read books.
         ids = self._pairing_pool()
 
         if len(ids) < 2:
             return None
 
         stats = self.statistics()
+
         by_id = {
             item["book"].id: item
             for item in stats
-            if item["book"].id in set(ids)
         }
 
+        # Restrict every candidate pool to the selected shelf cohort.
+        # This is the critical guard that prevents a currently-reading
+        # book from leaking into a to-read comparison (or vice versa).
         allowed_ids = set(ids)
 
-        # ----------------------------------------------------
-        # SERIES ORDER PRIORITY
-        # ----------------------------------------------------
-        # When a cohort contains multiple books from the same series,
-        # always work through the lowest available Series-# first. The
-        # comparison itself is still a human decision; series metadata only
-        # determines which comparison gets presented first.
-        series_groups = {}
-        for book_id in ids:
-            book = self.library[book_id]
-            name = series_name(book)
-            number = series_number(book)
-            if name and number is not None:
-                series_groups.setdefault(name.casefold(), []).append(book)
-
-        series_candidates = []
-
-        for members in series_groups.values():
-            members.sort(
-                key=lambda book: (
-                    series_number(book),
-                    -self.ratings[book.id].rating,
-                )
-            )
-
-            # Compare the earliest numbered book with the next numbered
-            # instance. If there is a gap in numbering, the next available
-            # larger number is used. Duplicate Series-# values are resolved
-            # by existing rating/uncertainty logic.
-            for index in range(len(members) - 1):
-                left_book = members[index]
-                right_book = members[index + 1]
-
-                if series_number(left_book) == series_number(right_book):
-                    continue
-
-                left = left_book.id
-                right = right_book.id
-                pair = self.pair_key(left, right)
-
-                if pair in self.played or self.skips.get(pair, 0) > 0:
-                    continue
-
-                if not self._same_pairing_cohort(left, right):
-                    continue
-
-                series_candidates.append(pair)
-
-        if series_candidates:
-            def series_priority(pair):
-                left, right = pair
-                left_book = self.library[left]
-                right_book = self.library[right]
-                left_number = series_number(left_book)
-                right_number = series_number(right_book)
-
-                return (
-                    -min(left_number, right_number),
-                    self.ratings[left].comparisons
-                    + self.ratings[right].comparisons,
-                    self.ratings[left].rd
-                    + self.ratings[right].rd,
-                )
-
-            selected = max(
-                series_candidates,
-                key=series_priority,
-            )
-
-            # Always present the lower-numbered series item on the left so
-            # the UI has a stable, readable series progression.
-            left, right = selected
-            if series_number(self.library[left]) > series_number(self.library[right]):
-                return (right, left)
-            return selected
-
-        # ----------------------------------------------------
-        # NEW-BOOK PRIORITY
-        # ----------------------------------------------------
-        # Rating.comparisons is rebuilt from the human comparison history,
-        # so zero means the book has genuinely never been compared.
-        unseen = [
-            book_id
-            for book_id in ids
-            if self.ratings[book_id].comparisons == 0
-        ]
-
-        if unseen:
-            # Prefer two never-compared books. This gives two books evidence
-            # with a single human decision and quickly establishes an initial
-            # ordering for the cohort.
-            if len(unseen) >= 2:
-                unseen_pair_candidates = []
-
-                for i, left in enumerate(unseen):
-                    for right in unseen[i + 1:]:
-                        pair = self.pair_key(left, right)
-
-                        if pair in self.played:
-                            continue
-
-                        if self.skips.get(pair, 0) > 0:
-                            continue
-
-                        if not self._same_pairing_cohort(left, right):
-                            continue
-
-                        unseen_pair_candidates.append(pair)
-
-                if unseen_pair_candidates:
-                    def unseen_pair_priority(pair):
-                        left, right = pair
-                        a = self.ratings[left]
-                        b = self.ratings[right]
-
-                        # Prefer the pair with the greatest combined
-                        # uncertainty while keeping the initial sample
-                        # broad and unbiased.
-                        return (
-                            a.rd + b.rd,
-                            abs(a.rd - b.rd),
-                        )
-
-                    return max(
-                        unseen_pair_candidates,
-                        key=unseen_pair_priority,
-                    )
-
-            # If only one unseen book remains, pair it with the best
-            # available book from the SAME shelf cohort. This guarantees the
-            # unseen book gets its first piece of evidence before the ranker
-            # returns to ordinary adaptive comparisons.
-            priority_candidates = []
-
-            for left in unseen:
-                for right in ids:
-                    if left == right:
-                        continue
-
-                    pair = self.pair_key(left, right)
-
-                    if pair in self.played:
-                        continue
-
-                    if self.skips.get(pair, 0) > 0:
-                        continue
-
-                    if not self._same_pairing_cohort(left, right):
-                        continue
-
-                    priority_candidates.append(pair)
-
-            if priority_candidates:
-                def unseen_book_priority(pair):
-                    left, right = pair
-                    a = self.ratings[left]
-                    b = self.ratings[right]
-                    left_stats = by_id[left]
-                    right_stats = by_id[right]
-
-                    # Always prefer pairs that contain an unseen book.
-                    unseen_count = int(a.comparisons == 0) + int(
-                        b.comparisons == 0
-                    )
-
-                    top_relevance = (
-                        left_stats["top25_probability"]
-                        + right_stats["top25_probability"]
-                    ) / 2.0
-
-                    boundary_relevance = max(
-                        0.0,
-                        1.0
-                        - abs(
-                            (
-                                left_stats["expected_rank"]
-                                + right_stats["expected_rank"]
-                            )
-                            / 2.0
-                            - TOP_K
-                        )
-                        / (BOUNDARY_WIDTH + 8.0),
-                    )
-
-                    return (
-                        unseen_count,
-                        max(a.rd, b.rd),
-                        top_relevance,
-                        boundary_relevance,
-                    )
-
-                return max(
-                    priority_candidates,
-                    key=unseen_book_priority,
-                )
-
-        # ----------------------------------------------------
-        # NORMAL ADAPTIVE SELECTOR
-        # ----------------------------------------------------
         ordered = [
             item["book"].id
             for item in stats
@@ -1436,48 +1158,83 @@ class RankingEngine:
                 min(
                     100,
                     int(
-                        math.sqrt(len(ids)) * 5
+                        math.sqrt(len(ids))
+                        * 5
                     ),
                 ),
             ),
         )
 
-        elite = ordered[:elite_size]
+        elite = ordered[
+            :elite_size
+        ]
 
         boundary = ordered[
-            max(0, TOP_K - BOUNDARY_WIDTH):
-            min(len(ordered), TOP_K + BOUNDARY_WIDTH)
+            max(
+                0,
+                TOP_K - BOUNDARY_WIDTH,
+            ):
+            min(
+                len(ordered),
+                TOP_K + BOUNDARY_WIDTH,
+            )
         ]
 
         high_rd = sorted(
             ids,
-            key=lambda book_id: self.ratings[book_id].rd,
+            key=lambda book_id:
+                self.ratings[
+                    book_id
+                ].rd,
             reverse=True,
-        )[:min(len(ids), 60)]
+        )[
+            :min(
+                len(ids),
+                60,
+            )
+        ]
 
-        pools = [elite, boundary, high_rd]
+        pools = [
+            elite,
+            boundary,
+            high_rd,
+        ]
+
         candidates = []
 
         for pool in pools:
             if len(pool) < 2:
                 continue
 
-            for _ in range(min(100, len(pool) * 2)):
-                left = self.rng.choice(pool)
-                right = self.rng.choice(pool)
+            for _ in range(
+                min(
+                    100,
+                    len(pool) * 2,
+                )
+            ):
+                left = self.rng.choice(
+                    pool
+                )
+
+                right = self.rng.choice(
+                    pool
+                )
 
                 if left == right:
                     continue
 
-                pair = self.pair_key(left, right)
+                pair = self.pair_key(
+                    left,
+                    right,
+                )
 
                 if pair in self.played:
                     continue
 
-                if self.skips.get(pair, 0) > 0:
-                    continue
-
-                if not self._same_pairing_cohort(left, right):
+                if self.skips.get(
+                    pair,
+                    0,
+                ) > 0:
                     continue
 
                 candidates.append(pair)
@@ -1486,7 +1243,10 @@ class RankingEngine:
         if not candidates:
             attempts = min(
                 PAIR_CANDIDATE_LIMIT,
-                max(100, len(ids) * 3),
+                max(
+                    100,
+                    len(ids) * 3,
+                ),
             )
 
             for _ in range(attempts):
@@ -1496,15 +1256,18 @@ class RankingEngine:
                 if left == right:
                     continue
 
-                pair = self.pair_key(left, right)
+                pair = self.pair_key(
+                    left,
+                    right,
+                )
 
                 if pair in self.played:
                     continue
 
-                if self.skips.get(pair, 0) > 0:
-                    continue
-
-                if not self._same_pairing_cohort(left, right):
+                if self.skips.get(
+                    pair,
+                    0,
+                ) > 0:
                     continue
 
                 candidates.append(pair)
@@ -1516,7 +1279,9 @@ class RankingEngine:
             return None
 
         if self.rng.random() < 0.055:
-            return self.rng.choice(candidates)
+            return self.rng.choice(
+                candidates
+            )
 
         def priority(pair):
             left, right = pair
@@ -1528,10 +1293,16 @@ class RankingEngine:
             sb = by_id[right]
 
             closeness = math.exp(
-                -abs(a.rating - b.rating) / 120.0
+                -abs(
+                    a.rating
+                    - b.rating
+                )
+                / 120.0
             )
 
-            uncertainty = (a.rd + b.rd) / 700.0
+            uncertainty = (
+                a.rd + b.rd
+            ) / 700.0
 
             top_relevance = (
                 sa["top25_probability"]
@@ -1549,13 +1320,38 @@ class RankingEngine:
                     / 2.0
                     - TOP_K
                 )
-                / (BOUNDARY_WIDTH + 8.0),
+                / (
+                    BOUNDARY_WIDTH
+                    + 8.0
+                ),
             )
 
-            challenger = max(a.rd, b.rd) / 350.0
+            challenger = max(
+                a.rd,
+                b.rd,
+            ) / 350.0
 
             balance = math.exp(
-                -abs(a.comparisons - b.comparisons) / 8.0
+                -abs(
+                    a.comparisons
+                    - b.comparisons
+                )
+                / 8.0
+            )
+
+            currently_reading = (
+                1.10
+                if (
+                    self.library[
+                        left
+                    ].status
+                    == "currently-reading"
+                    or self.library[
+                        right
+                    ].status
+                    == "currently-reading"
+                )
+                else 1.0
             )
 
             return (
@@ -1564,9 +1360,12 @@ class RankingEngine:
                 + 0.22 * top_relevance
                 + 0.16 * boundary_relevance
                 + 0.08 * challenger
-            ) * balance
+            ) * balance * currently_reading
 
-        return max(candidates, key=priority)
+        return max(
+            candidates,
+            key=priority,
+        )
 
     # --------------------------------------------------------
     # Human actions
@@ -4209,8 +4008,6 @@ class RankerApp:
             ("Publisher", "publisher"),
             ("ISBN", "isbn"),
             ("DOI", "doi"),
-            ("Series", "series"),
-            ("Series-#", "series-#"),
             ("Description", "description"),
         ]
 
@@ -4233,11 +4030,6 @@ class RankerApp:
                     "publisher": book.publisher,
                     "isbn": book.isbn,
                     "book id - goodreads": book.goodreads_id,
-                    "series": series_name(book),
-                    "series-#": (
-                        "" if series_number(book) is None
-                        else str(series_number(book))
-                    ),
                     "description": book.description,
                 }
 
@@ -4650,11 +4442,6 @@ class RankerApp:
                     "publisher": book.publisher,
                     "isbn": book.isbn,
                     "book id - goodreads": book.goodreads_id,
-                    "series": series_name(book),
-                    "series-#": (
-                        "" if series_number(book) is None
-                        else str(series_number(book))
-                    ),
                     "description": book.description,
                 }
                 value = fallback.get(key, "")
@@ -5857,49 +5644,6 @@ def run_self_test():
         )
 
     # --------------------------------------------------------
-    # Series ordering test
-    # --------------------------------------------------------
-
-    series_books = [
-        Book(
-            id="s3",
-            title="Series 3",
-            shelf="to-read",
-            status="to-read",
-            goodreads_fields={"series": "Saga", "series-#": "3"},
-        ),
-        Book(
-            id="s1",
-            title="Series 1",
-            shelf="to-read",
-            status="to-read",
-            goodreads_fields={"series": "Saga", "series-#": "1"},
-        ),
-        Book(
-            id="s2",
-            title="Series 2",
-            shelf="to-read",
-            status="to-read",
-            goodreads_fields={"series": "Saga", "series-#": "2"},
-        ),
-    ]
-
-    series_engine = RankingEngine(
-        series_books,
-        seed=7,
-    )
-    series_pair = series_engine.choose_pair()
-    assert series_pair == ("s1", "s2"), series_pair
-
-    series_stats = series_engine.statistics()
-    saga_order = [
-        item["book"].id
-        for item in series_stats
-        if series_name(item["book"]).casefold() == "saga"
-    ]
-    assert saga_order == ["s1", "s2", "s3"], saga_order
-
-    # --------------------------------------------------------
     # Actual import pipeline test
     # --------------------------------------------------------
 
@@ -5918,8 +5662,6 @@ def run_self_test():
         worksheet.append(
             [
                 "Book Id - Goodreads",
-                "Series",
-                "Series-#",
                 "Title",
                 "Author l-f",
                 "Exclusive Shelf",
@@ -5932,8 +5674,6 @@ def run_self_test():
         worksheet.append(
             [
                 "1001",
-                "Example Series",
-                "1",
                 "Alpha",
                 "Author, A",
                 "to-read",
@@ -5946,8 +5686,6 @@ def run_self_test():
         worksheet.append(
             [
                 "1002",
-                "Example Series",
-                "2",
                 "Beta",
                 "Author, B",
                 "currently-reading",

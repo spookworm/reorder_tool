@@ -19,14 +19,15 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-                                                              
-             
-                                                              
+
+# ============================================================
+# APPLICATION
+# ============================================================
 
 APP_NAME = "Goodreads To-Read Ranker"
 APP_VERSION = "6.1.0-SHELF-SEGMENTED"
@@ -54,9 +55,10 @@ PRESETS = {
     "MAX_ACCURACY": (16, True),
 }
 
-                                                              
-        
-                                                              
+
+# ============================================================
+# THEMES
+# ============================================================
 
 DARK = {
     "bg": "#0B1020",
@@ -92,9 +94,10 @@ LIGHT = {
     "button_hover": "#DCE6F2",
 }
 
-                                                              
-           
-                                                              
+
+# ============================================================
+# UTILITIES
+# ============================================================
 
 def normalize(value) -> str:
     if value is None:
@@ -105,14 +108,18 @@ def normalize(value) -> str:
 
     return str(value).strip().replace("\ufeff", "")
 
+
 def normalize_header(value) -> str:
     return normalize(value).lower()
+
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
+
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
 
 def sigmoid(value: float) -> float:
     if value >= 0:
@@ -121,12 +128,14 @@ def sigmoid(value: float) -> float:
     z = math.exp(max(value, -700))
     return z / (1.0 + z)
 
+
 def normalized_text(value) -> str:
     return re.sub(
         r"[^a-z0-9]+",
         " ",
         normalize(value).lower(),
     ).strip()
+
 
 def clean_isbn(value) -> str:
     return (
@@ -135,7 +144,19 @@ def clean_isbn(value) -> str:
         .replace(" ", "")
     )
 
+
 def stable_book_id(row: dict) -> str:
+    """
+    Stable identity priority:
+
+    1. Goodreads Book Id
+    2. ISBN
+    3. deterministic title + author hash
+
+    IMPORTANT:
+    import_goodreads() normalizes all headers to lowercase,
+    so this function deliberately uses lowercase keys.
+    """
 
     if not isinstance(row, dict):
         raise TypeError(
@@ -172,15 +193,17 @@ def stable_book_id(row: dict) -> str:
         identity.encode("utf-8")
     ).hexdigest()[:20]
 
+
 def safe_float(value, default=0.0) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
 
-                                                              
-                     
-                                                              
+
+# ============================================================
+# GLICKO-STYLE RATING
+# ============================================================
 
 @dataclass
 class Rating:
@@ -193,11 +216,18 @@ class Rating:
     losses: int = 0
     ties: int = 0
 
+
 def glicko_update(
     player: Rating,
     opponent: Rating,
     score: float,
 ) -> Rating:
+    """
+    Stable sequential Glicko-style update.
+
+    Every human decision arrives one at a time, so the model
+    rebuilds its state by replaying the human comparison history.
+    """
 
     q = math.log(10.0) / 400.0
 
@@ -284,14 +314,16 @@ def glicko_update(
         ties=player.ties + int(score == 0.5),
     )
 
-                                                              
-                
-                                                              
+
+# ============================================================
+# SERIES HELPERS
+# ============================================================
 
 def series_name(book):
     fields = getattr(book, "goodreads_fields", {}) or {}
     value = fields.get("series", "")
     return normalize(value).strip()
+
 
 def series_number(book):
     fields = getattr(book, "goodreads_fields", {}) or {}
@@ -307,6 +339,7 @@ def series_number(book):
 
     return number
 
+
 def series_key(book):
     name = series_name(book)
     number = series_number(book)
@@ -316,9 +349,10 @@ def series_key(book):
 
     return (name.casefold(), number)
 
-                                                              
-            
-                                                              
+
+# ============================================================
+# BOOK MODEL
+# ============================================================
 
 @dataclass
 class Book:
@@ -336,16 +370,34 @@ class Book:
     publisher: str = ""
     goodreads_id: str = ""
 
-                                                               
-                                                                  
-                                                                
+    # Every normalized Goodreads column is retained here so the
+    # book cards can display the complete source record, including
+    # columns that are not otherwise used by the ranking engine.
     goodreads_fields: dict = field(default_factory=dict)
 
-                                                              
-                  
-                                                              
+
+# ============================================================
+# GOODREADS IMPORT
+# ============================================================
 
 def import_goodreads(path):
+    """
+    Import a Goodreads Excel export.
+
+    ALL dictionary keys returned by this function are lowercase.
+
+    This is important because Goodreads headers such as:
+
+        Title
+        Author l-f
+        Book Id - Goodreads
+
+    become:
+
+        title
+        author l-f
+        book id - goodreads
+    """
 
     path = Path(path)
 
@@ -406,7 +458,7 @@ def import_goodreads(path):
                 else:
                     record[heading] = ""
 
-                                           
+            # Ignore completely empty rows.
             if not any(record.values()):
                 continue
 
@@ -420,7 +472,14 @@ def import_goodreads(path):
     finally:
         workbook.close()
 
+
 def book_from_row(row):
+    """
+    Convert one normalized Goodreads row into a Book.
+
+    This function expects ONE dict, not the complete list returned
+    by import_goodreads().
+    """
 
     if not isinstance(row, dict):
         raise TypeError(
@@ -501,15 +560,36 @@ def book_from_row(row):
         },
     )
 
-                                                              
-                
-                                                              
+
+# ============================================================
+# RANKING ENGINE
+# ============================================================
 
 class RankingEngine:
+    """
+    Human-preference ranking engine.
+
+    Goodreads metadata NEVER decides which book is better.
+
+    Goodreads data is used for:
+        - identity
+        - display
+        - lifecycle synchronization
+
+    Human pairwise choices are the preference evidence.
+
+    The engine uses:
+        - sequential Glicko-style ratings
+        - uncertainty-aware rank estimates
+        - Top-K probability estimates
+        - adaptive candidate selection
+        - elite/boundary/challenger pools
+
+    It never constructs the full N*(N-1)/2 pair set.
+    """
 
     ACTIVE_STATUSES = {
         "to-read",
-        "currently-reading",
     }
 
     ALL_STATUSES = {
@@ -596,9 +676,9 @@ class RankingEngine:
         self._sync_books()
         self._replay()
 
-                                                              
-                         
-                                                              
+    # --------------------------------------------------------
+    # State compatibility
+    # --------------------------------------------------------
 
     @staticmethod
     def _normalize_skips(skips):
@@ -634,9 +714,9 @@ class RankingEngine:
 
         return result
 
-                                                              
-             
-                                                              
+    # --------------------------------------------------------
+    # Library
+    # --------------------------------------------------------
 
     def _sync_books(self):
         self.books = [
@@ -651,9 +731,9 @@ class RankingEngine:
             for book in self.books
         ]
 
-                                                              
-                   
-                                                              
+    # --------------------------------------------------------
+    # Pair identity
+    # --------------------------------------------------------
 
     @staticmethod
     def pair_key(a, b):
@@ -666,11 +746,17 @@ class RankingEngine:
             )
         )
 
-                                                              
-                   
-                                                              
+    # --------------------------------------------------------
+    # Rebuild model
+    # --------------------------------------------------------
 
     def _replay(self):
+        """
+        Rebuild ratings from human history.
+
+        Archived books remain in the comparison history but do not
+        affect the current active ranking.
+        """
 
         self.ratings = {
             book.id: Rating()
@@ -687,10 +773,10 @@ class RankingEngine:
             right = comparison.get("right")
             result = comparison.get("result")
 
-                                                                   
-                                                                        
-                                                                      
-                                      
+            # Optional deterministic manual bonus recorded with the
+            # comparison.  It is applied after the normal Glicko update,
+            # so it is truly "on top of" whatever the comparison would
+            # otherwise have produced.
             try:
                 winner_bonus = float(
                     comparison.get("winner_bonus", 0.0)
@@ -771,21 +857,44 @@ class RankingEngine:
                     0.5,
                 )
 
-                                                                   
-                                                                   
-                                                                      
-                                      
+            # Apply the optional manual winner bonus only after the
+            # normal comparison update.  This leaves the underlying
+            # Glicko calculation intact and adds exactly the requested
+            # number of rating points.
             if winner_bonus > 0:
                 if result == "left":
                     self.ratings[left].rating += winner_bonus
                 elif result == "right":
                     self.ratings[right].rating += winner_bonus
 
-                                                              
-                              
-                                                              
+    # --------------------------------------------------------
+    # Goodreads reconciliation
+    # --------------------------------------------------------
 
     def sync_goodreads(self, rows):
+        """
+        Reconcile a new Goodreads export with existing state.
+
+        IMPORTANT:
+        rows must be a list of dictionaries.
+
+        New books are added without resetting existing evidence.
+
+        Read books leave the active ranking.
+
+        Currently-reading remains active and is a separate comparison
+        cohort: it is only compared with other currently-reading books.
+
+        To-read books are compared only with other to-read books.
+
+        Ignored books remain ignored even if Goodreads says to-read.
+
+        Imported series order is recorded as real ranking evidence: for
+        #1, #2, #3 the engine records #1 > #2 and #2 > #3.
+
+        Removed records are retained in the internal library so
+        previous identity/history is not silently destroyed.
+        """
 
         if not isinstance(rows, list):
             raise TypeError(
@@ -842,8 +951,8 @@ class RankingEngine:
             if old_book:
                 old_status = old_book.status
 
-                                                                 
-                                             
+                # Manual lifecycle decisions take precedence over
+                # the Goodreads source shelf.
                 if old_status == "ignore":
                     status = "ignore"
 
@@ -863,8 +972,8 @@ class RankingEngine:
 
                 added.append(book_id)
 
-                                                         
-                                                                 
+            # The application lifecycle is authoritative.
+            # Keep the shelf representation synchronized with it.
             if status in self.ALL_STATUSES:
                 shelf = status
 
@@ -873,9 +982,9 @@ class RankingEngine:
                 for key, value in row.items()
             }
 
-                                                                   
-                                                                     
-                                                                
+            # Keep the normalized source record consistent with the
+            # application's authoritative lifecycle. This matters for
+            # Ignore and Currently Reading across later imports.
             goodreads_fields[
                 "exclusive shelf"
             ] = shelf
@@ -916,7 +1025,7 @@ class RankingEngine:
             if book_id not in seen_ids:
                 removed.append(book_id)
 
-                                       
+                # Preserve old records.
                 new_library[book_id] = book
 
         self.library = new_library
@@ -924,10 +1033,10 @@ class RankingEngine:
         self._sync_books()
         self._replay()
 
-                                                                         
-                                                                           
-                                                                           
-                                                                         
+        # A series is real ranking evidence. When books arrive through an
+        # import, establish the ordered relationships as actual comparisons
+        # so they are replayed, persisted, counted, and undone exactly like
+        # human comparisons. Existing relationships are never duplicated.
         series_comparisons_added = (
             self._apply_series_order_comparisons()
         )
@@ -942,9 +1051,9 @@ class RankingEngine:
             "series_comparisons_added": series_comparisons_added,
         }
 
-                                                              
-                         
-                                                              
+    # --------------------------------------------------------
+    # Statistical ranking
+    # --------------------------------------------------------
 
     def statistics(self):
         if not self.books:
@@ -955,18 +1064,18 @@ class RankingEngine:
             name = series_name(book)
             number = series_number(book)
 
-                                                                        
-                                                                     
-                                                                          
-                                                                         
+            # Series order is a hard ordering constraint within a single
+            # series: a smaller valid Series-# always appears above a
+            # larger valid Series-# for that same Series. Outside the same
+            # series, human preference/rating remains the ranking signal.
             return (
                 rating,
                 name.casefold() if name else "",
                 -number if name and number is not None else float("-inf"),
             )
 
-                                                                        
-                                                                   
+        # First sort by human evidence, then repair ordering inside each
+        # series so that the lowest valid Series-# is always first.
         ranked = sorted(
             self.books,
             key=lambda book: self.ratings[book.id].rating,
@@ -990,8 +1099,8 @@ class RankingEngine:
             member_positions = {book.id: index for index, book in enumerate(ordered_members)}
             ranked_positions = {book.id: index for index, book in enumerate(ranked) if book.id in member_positions}
 
-                                                                             
-                                                        
+            # Move members into the positions occupied by the series members,
+            # preserving the rest of the global ranking.
             positions = sorted(ranked_positions.values())
             for position, member in zip(positions, ordered_members):
                 ranked[position] = member
@@ -1082,20 +1191,21 @@ class RankingEngine:
 
         return output
 
-                                                              
-                     
-                                                              
+    # --------------------------------------------------------
+    # Active learning
+    # --------------------------------------------------------
 
     def _pairing_pool(self):
+        """Return the active shelf cohort eligible for the next comparison."""
         currently_reading = [
             book.id
             for book in self.books
             if book.status == "currently-reading"
         ]
 
-                                                                       
-                                                                       
-                                                                 
+        # Currently-reading is a hard comparison boundary. If there are
+        # two or more currently-reading books, the next comparison MUST
+        # come from that cohort and may not use any to-read book.
         if len(currently_reading) >= 2:
             return currently_reading
 
@@ -1105,14 +1215,15 @@ class RankingEngine:
             if book.status == "to-read"
         ]
 
-                                                                         
-                                                                      
+        # A single currently-reading book cannot be compared to a to-read
+        # book, so allow the to-read cohort to continue independently.
         if len(to_read) >= 2:
             return to_read
 
         return []
 
     def _same_pairing_cohort(self, left, right):
+        """Return True only when both books belong to the same active shelf."""
         if left not in self.library or right not in self.library:
             return False
 
@@ -1125,6 +1236,18 @@ class RankingEngine:
         )
 
     def choose_pair(self):
+        """Choose the next pair using shelf-local active learning.
+
+        Priority order:
+        1. Books with zero comparisons are introduced first.
+        2. If two zero-comparison books are available, compare them together.
+        3. Otherwise compare a zero-comparison book against the strongest
+           available candidate in the same Exclusive Shelf cohort.
+        4. Once every book in the cohort has at least one comparison, use the
+           normal adaptive Glicko/top-25/boundary selector.
+
+        Currently-reading and to-read books are never mixed in a comparison.
+        """
         ids = self._pairing_pool()
 
         if len(ids) < 2:
@@ -1139,13 +1262,13 @@ class RankingEngine:
 
         allowed_ids = set(ids)
 
-                                                              
-                               
-                                                              
-                                                                     
-                                                                      
-                                                                           
-                                                           
+        # ----------------------------------------------------
+        # SERIES ORDER PRIORITY
+        # ----------------------------------------------------
+        # When a cohort contains multiple books from the same series,
+        # always work through the lowest available Series-# first. The
+        # comparison itself is still a human decision; series metadata only
+        # determines which comparison gets presented first.
         series_groups = {}
         for book_id in ids:
             book = self.library[book_id]
@@ -1164,10 +1287,10 @@ class RankingEngine:
                 )
             )
 
-                                                                       
-                                                                          
-                                                                           
-                                                   
+            # Compare the earliest numbered book with the next numbered
+            # instance. If there is a gap in numbering, the next available
+            # larger number is used. Duplicate Series-# values are resolved
+            # by existing rating/uncertainty logic.
             for index in range(len(members) - 1):
                 left_book = members[index]
                 right_book = members[index + 1]
@@ -1208,18 +1331,18 @@ class RankingEngine:
                 key=series_priority,
             )
 
-                                                                          
-                                                               
+            # Always present the lower-numbered series item on the left so
+            # the UI has a stable, readable series progression.
             left, right = selected
             if series_number(self.library[left]) > series_number(self.library[right]):
                 return (right, left)
             return selected
 
-                                                              
-                           
-                                                              
-                                                                          
-                                                                   
+        # ----------------------------------------------------
+        # NEW-BOOK PRIORITY
+        # ----------------------------------------------------
+        # Rating.comparisons is rebuilt from the human comparison history,
+        # so zero means the book has genuinely never been compared.
         unseen = [
             book_id
             for book_id in ids
@@ -1227,9 +1350,9 @@ class RankingEngine:
         ]
 
         if unseen:
-                                                                            
-                                                                             
-                                      
+            # Prefer two never-compared books. This gives two books evidence
+            # with a single human decision and quickly establishes an initial
+            # ordering for the cohort.
             if len(unseen) >= 2:
                 unseen_pair_candidates = []
 
@@ -1254,9 +1377,9 @@ class RankingEngine:
                         a = self.ratings[left]
                         b = self.ratings[right]
 
-                                                                    
-                                                                      
-                                             
+                        # Prefer the pair with the greatest combined
+                        # uncertainty while keeping the initial sample
+                        # broad and unbiased.
                         return (
                             a.rd + b.rd,
                             abs(a.rd - b.rd),
@@ -1267,10 +1390,10 @@ class RankingEngine:
                         key=unseen_pair_priority,
                     )
 
-                                                                    
-                                                                            
-                                                                            
-                                                       
+            # If only one unseen book remains, pair it with the best
+            # available book from the SAME shelf cohort. This guarantees the
+            # unseen book gets its first piece of evidence before the ranker
+            # returns to ordinary adaptive comparisons.
             priority_candidates = []
 
             for left in unseen:
@@ -1299,7 +1422,7 @@ class RankingEngine:
                     left_stats = by_id[left]
                     right_stats = by_id[right]
 
-                                                                      
+                    # Always prefer pairs that contain an unseen book.
                     unseen_count = int(a.comparisons == 0) + int(
                         b.comparisons == 0
                     )
@@ -1335,9 +1458,9 @@ class RankingEngine:
                     key=unseen_book_priority,
                 )
 
-                                                              
-                                  
-                                                              
+        # ----------------------------------------------------
+        # NORMAL ADAPTIVE SELECTOR
+        # ----------------------------------------------------
         ordered = [
             item["book"].id
             for item in stats
@@ -1397,7 +1520,7 @@ class RankingEngine:
 
                 candidates.append(pair)
 
-                                     
+        # Bounded random exploration.
         if not candidates:
             attempts = min(
                 PAIR_CANDIDATE_LIMIT,
@@ -1483,11 +1606,27 @@ class RankingEngine:
 
         return max(candidates, key=priority)
 
-                                                              
-                                     
-                                                              
+    # --------------------------------------------------------
+    # Automatic series-order evidence
+    # --------------------------------------------------------
 
     def _apply_series_order_comparisons(self):
+        """
+        Record real ranking comparisons implied by series order.
+
+        For a series containing #1, #2, #3, this records:
+
+            #1 > #2
+            #2 > #3
+
+        These entries use the same comparison/replay machinery as human
+        comparisons and are persisted in ``self.comparisons``. Existing
+        pairs are never duplicated.
+
+        Series comparisons respect the same active-shelf cohort rule as
+        human comparisons: currently-reading books only compare with
+        currently-reading books, and to-read only with to-read.
+        """
         groups = {}
 
         for book in self.library.values():
@@ -1541,8 +1680,8 @@ class RankingEngine:
                 if pair in existing:
                     continue
 
-                                                                          
-                                                    
+                # The lower-numbered book is the winner. This is a genuine
+                # comparison, not a rating override.
                 self.apply_match(
                     left,
                     right,
@@ -1555,9 +1694,9 @@ class RankingEngine:
 
         return created
 
-                                                              
-                   
-                                                              
+    # --------------------------------------------------------
+    # Human actions
+    # --------------------------------------------------------
 
     def apply_match(
         self,
@@ -1630,9 +1769,9 @@ class RankingEngine:
                 "Winner bonus cannot be negative."
             )
 
-                                                                   
-                                                                       
-                            
+        # Automatic series-order comparisons never receive a manual
+        # bonus.  They already encode their evidence through the normal
+        # comparison result.
         if source == "series-order":
             winner_bonus = 0.0
 
@@ -1685,9 +1824,9 @@ class RankingEngine:
 
         return True
 
-                                                              
-               
-                                                              
+    # --------------------------------------------------------
+    # Lifecycle
+    # --------------------------------------------------------
 
     def set_lifecycle(
         self,
@@ -1704,11 +1843,11 @@ class RankingEngine:
 
         book = self.library[book_id]
 
-                                                      
+        # Always update the internal lifecycle status.
         book.status = status
         self.statuses[book_id] = status
 
-                                                                     
+        # Keep the Book shelf and Goodreads source data synchronized.
         if status == "ignore":
             book.shelf = "ignore"
 
@@ -1732,9 +1871,9 @@ class RankingEngine:
         self._sync_books()
         self._replay()
 
-                                                              
-              
-                                                              
+    # --------------------------------------------------------
+    # Progress
+    # --------------------------------------------------------
 
     def progress(self):
         if not self.books:
@@ -1754,9 +1893,9 @@ class RankingEngine:
             1.0,
         )
 
-                                                              
-                
-                                                              
+    # --------------------------------------------------------
+    # Confidence
+    # --------------------------------------------------------
 
     def confidence_metrics(self):
         stats = self.statistics()
@@ -1864,9 +2003,9 @@ class RankingEngine:
             )
         )
 
-                                                              
-                 
-                                                              
+    # --------------------------------------------------------
+    # Persistence
+    # --------------------------------------------------------
 
     def to_state(self):
         return {
@@ -1901,9 +2040,10 @@ class RankingEngine:
             },
         }
 
-                                                              
-             
-                                                              
+
+# ============================================================
+# STATE STORE
+# ============================================================
 
 class StateStore:
     def __init__(self, source):
@@ -1969,8 +2109,8 @@ class StateStore:
             if version > STATE_VERSION:
                 return None
 
-                                                               
-                                       
+            # Old/malformed state files should never be allowed
+            # to crash the application.
             if not isinstance(
                 data.get(
                     "comparisons",
@@ -2003,9 +2143,10 @@ class StateStore:
         except Exception:
             return None
 
-                                                              
-              
-                                                              
+
+# ============================================================
+# EXCEL EXPORT
+# ============================================================
 
 def excel_column_name(number):
     result = ""
@@ -2029,6 +2170,13 @@ def update_goodreads_source_sheet(
     worksheet,
     engine,
 ):
+    """
+    Write the current Book.goodreads_fields values back into
+    the original Goodreads worksheet.
+
+    Rows are matched primarily by Goodreads Book Id.
+    Existing columns are preserved.
+    """
 
     if worksheet.max_row < 1:
         return
@@ -2110,11 +2258,11 @@ def update_goodreads_source_sheet(
             )
 
             if not column:
-                                                        
-                                                
+                # Do not invent columns in the middle of
+                # the original Goodreads export.
                 continue
 
-                                                               
+            # Never overwrite the identity key from the editor.
             if normalize_header(key) == (
                 "book id - goodreads"
             ):
@@ -2134,6 +2282,15 @@ def export_results(
     engine,
     output=None,
 ):
+    """
+    Preserve the original Goodreads workbook and add:
+
+        Ranking
+        Summary
+
+    The source is not overwritten unless output is explicitly
+    the source path.
+    """
 
     source = Path(source)
 
@@ -2151,11 +2308,11 @@ def export_results(
     )
 
     try:
-                                                                  
-                    
-                                                           
-                                                              
-                                                                  
+        # --------------------------------------------------------
+        # IMPORTANT:
+        # Write edits from the cards back into the original
+        # Goodreads worksheet before creating Ranking/Summary.
+        # --------------------------------------------------------
 
         source_sheet = workbook.active
 
@@ -2402,9 +2559,10 @@ def export_results(
 
     return output
 
-                                                              
-     
-                                                              
+
+# ============================================================
+# GUI
+# ============================================================
 
 class RankerApp:
     def __init__(self, root):
@@ -2443,9 +2601,9 @@ class RankerApp:
             self.close,
         )
 
-                                                              
-             
-                                                              
+    # --------------------------------------------------------
+    # Styling
+    # --------------------------------------------------------
 
     def build_styles(self):
         self.style = ttk.Style(
@@ -2549,9 +2707,9 @@ class RankerApp:
             darkcolor=c["accent"],
         )
 
-                                                              
-             
-                                                              
+    # --------------------------------------------------------
+    # Main UI
+    # --------------------------------------------------------
 
     def build_ui(self):
         c = self.colors
@@ -2578,7 +2736,7 @@ class RankerApp:
             weight=1,
         )
 
-                 
+        # Header.
         header = tk.Frame(
             self.main,
             bg=c["bg"],
@@ -2703,7 +2861,7 @@ class RankerApp:
             padx=3,
         )
 
-                    
+        # Dashboard.
         dashboard = tk.Frame(
             self.main,
             bg=c["panel"],
@@ -2754,7 +2912,7 @@ class RankerApp:
             pady=(0, 7),
         )
 
-                          
+        # Comparison area.
         comparison = tk.Frame(
             self.main,
             bg=c["bg"],
@@ -2826,7 +2984,7 @@ class RankerApp:
             padx=(6, 0),
         )
 
-                       
+        # Decision row.
         decisions = tk.Frame(
             self.main,
             bg=c["bg"],
@@ -2893,9 +3051,9 @@ class RankerApp:
             ipady=8,
         )
 
-                                                                   
-                                                                      
-                                                                         
+        # Optional manual rating bonus applied to the winner of the
+        # next human decision.  The normal Glicko result is calculated
+        # first, then this exact number of points is added to the winner.
         self.winner_bonus_var = tk.StringVar(
             value="0"
         )
@@ -2969,7 +3127,7 @@ class RankerApp:
             padx=8,
         )
 
-                      
+        # Utility row.
         utility = tk.Frame(
             self.main,
             bg=c["bg"],
@@ -3014,7 +3172,7 @@ class RankerApp:
                 padx=3,
             )
 
-                         
+        # Shortcut panel.
         self.shortcut_panel = tk.Frame(
             self.main,
             bg=c["panel"],
@@ -3031,9 +3189,9 @@ class RankerApp:
 
         self.build_shortcut_panel()
 
-                                                              
-                
-                                                              
+    # --------------------------------------------------------
+    # Book cards
+    # --------------------------------------------------------
 
     def create_book_card(
         self,
@@ -3286,8 +3444,8 @@ class RankerApp:
             details,
         )
 
-                                                                   
-                                                                
+        # Keep the old attribute name as an alias so older state/UI
+        # code cannot break if it still refers to *_description.
         setattr(
             self,
             f"{side}_description",
@@ -3366,6 +3524,7 @@ class RankerApp:
         widget,
         side,
     ):
+        """Bind lifecycle menu to the card background only."""
 
         widget.bind(
             "<Button-1>",
@@ -3376,9 +3535,9 @@ class RankerApp:
                 ),
         )
 
-                                                              
-           
-                                                              
+    # --------------------------------------------------------
+    # Theme
+    # --------------------------------------------------------
 
     def toggle_theme(self):
         self.theme_name = (
@@ -3524,9 +3683,9 @@ class RankerApp:
                 child
             )
 
-                                                              
-                        
-                                                              
+    # --------------------------------------------------------
+    # Keyboard shortcuts
+    # --------------------------------------------------------
 
     def bind_shortcuts(self):
         root = self.root
@@ -3669,9 +3828,9 @@ class RankerApp:
                 self.export(),
         )
 
-                                                              
-                    
-                                                              
+    # --------------------------------------------------------
+    # Shortcut panel
+    # --------------------------------------------------------
 
     def build_shortcut_panel(self):
         c = self.colors
@@ -3781,9 +3940,9 @@ class RankerApp:
                 expand=True,
             )
 
-                                                              
-                  
-                                                              
+    # --------------------------------------------------------
+    # File opening
+    # --------------------------------------------------------
 
     def open_excel(self):
         path = filedialog.askopenfilename(
@@ -3850,7 +4009,7 @@ class RankerApp:
                 ):
                     saved_books = {}
 
-                                                            
+                # Restore manually managed lifecycle states.
                 for book in books:
                     saved = saved_books.get(
                         book.id
@@ -3928,7 +4087,7 @@ class RankerApp:
                     rows
                 )
 
-                                                                 
+                # Make the mode selector agree with loaded state.
                 self.mode_var.set(
                     self.engine.mode
                 )
@@ -3958,9 +4117,9 @@ class RankerApp:
                 ),
             )
 
-                                                              
-          
-                                                              
+    # --------------------------------------------------------
+    # Mode
+    # --------------------------------------------------------
 
     def change_mode(
         self,
@@ -3987,9 +4146,9 @@ class RankerApp:
 
         self.refresh()
 
-                                                              
-             
-                                                              
+    # --------------------------------------------------------
+    # Refresh
+    # --------------------------------------------------------
 
     def refresh(self):
         if not self.engine:
@@ -4111,6 +4270,7 @@ class RankerApp:
         isbn="",
         doi="",
     ):
+        """Open a DuckDuckGo search using title, author, and ISBN or DOI."""
         title = str(title or "").strip()
         author = str(author or "").strip()
         isbn = str(isbn or "").strip()
@@ -4137,6 +4297,7 @@ class RankerApp:
             )
 
     def search_current_book(self, side):
+        """Search the book currently displayed on the selected card."""
 
         if not self.engine or not self.current_pair:
             return
@@ -4297,7 +4458,7 @@ class RankerApp:
 
             value = fields.get(key, "")
 
-                                          
+            # Fall back to the Book model.
             if not value:
                 fallback = {
                     "pages": book.pages,
@@ -4380,7 +4541,7 @@ class RankerApp:
                     ),
                 )
 
-                                                        
+            # Goodreads ID is deliberately not editable.
             if key == "book id - goodreads":
                 widget.configure(
                     state="disabled"
@@ -4400,9 +4561,9 @@ class RankerApp:
             weight=1,
         )
 
-                                                                  
-                 
-                                                                  
+        # --------------------------------------------------------
+        # Buttons
+        # --------------------------------------------------------
 
         buttons = tk.Frame(
             editor,
@@ -4416,7 +4577,7 @@ class RankerApp:
         )
 
         def save_changes():
-                                          
+            # Update all Goodreads fields.
             for key, variable in variables.items():
                 fields[key] = normalize(
                     variable.get()
@@ -4434,10 +4595,10 @@ class RankerApp:
                     )
                 )
 
-                                                
+            # Update the full source dictionary.
             book.goodreads_fields = fields
 
-                                                                        
+            # Keep the Book model synchronized with the editable fields.
             book.title = fields.get(
                 "title",
                 book.title,
@@ -4490,7 +4651,7 @@ class RankerApp:
                 book.goodreads_id,
             )
 
-                                                         
+            # Keep status/ranking lifecycle synchronized.
             shelf = normalize(
                 fields.get(
                     "exclusive shelf",
@@ -4511,8 +4672,8 @@ class RankerApp:
             if shelf in self.engine.ALL_STATUSES:
                 book.shelf = shelf
 
-                                                               
-                                                                  
+                # Do not accidentally resurrect an ignored book
+                # simply because its Goodreads shelf says to-read.
                 if book.status != "ignore":
                     book.status = shelf
 
@@ -4527,7 +4688,7 @@ class RankerApp:
 
             editor.destroy()
 
-                                       
+            # Redraw the current cards.
             self.display_book(
                 book,
                 side,
@@ -4561,7 +4722,7 @@ class RankerApp:
             lambda event: save_changes(),
         )
 
-                                                
+        # Put keyboard focus in the first field.
         if fields_to_edit:
             first_key = fields_to_edit[0][1]
             first_widget = widgets.get(first_key)
@@ -4673,6 +4834,7 @@ class RankerApp:
         self,
         book,
     ):
+        """Return every useful Goodreads source column for a book."""
 
         fields = dict(
             getattr(
@@ -4683,8 +4845,8 @@ class RankerApp:
             or {}
         )
 
-                                                                   
-                                                            
+        # These are the columns the user specifically wants to see,
+        # in the same logical order as the Goodreads export.
         ordered = [
             ("Pages", "pages"),
             ("Title", "title"),
@@ -4713,7 +4875,7 @@ class RankerApp:
         for label, key in ordered:
             value = fields.get(key, "")
 
-                                                                
+            # Fall back to the Book model for older state files.
             if not value:
                 fallback = {
                     "number of pages": book.pages,
@@ -4735,8 +4897,8 @@ class RankerApp:
                 value = fallback.get(key, "")
 
             if key == "description" and value:
-                                                                        
-                                                           
+                # Keep the full description available via the scrollable
+                # card rather than silently cutting it off.
                 pass
 
             lines.append(
@@ -4744,9 +4906,9 @@ class RankerApp:
             )
             used.add(key)
 
-                                                                  
-                                                                    
-                                                  
+        # Also show any additional columns present in a particular
+        # Goodreads export, so the card genuinely exposes all source
+        # columns rather than only a fixed subset.
         extras = [
             (key, value)
             for key, value in fields.items()
@@ -4788,7 +4950,7 @@ class RankerApp:
         )
         widget.yview_moveto(0.0)
 
-                                                            
+    # Backward-compatible helper retained for older callers.
     def set_description(
         self,
         widget,
@@ -4809,9 +4971,9 @@ class RankerApp:
             state="disabled"
         )
 
-                                                              
-                   
-                                                              
+    # --------------------------------------------------------
+    # Human actions
+    # --------------------------------------------------------
 
     def choose(
         self,
@@ -4850,7 +5012,7 @@ class RankerApp:
                 )
                 return
 
-                                                                    
+            # A tie has no winner, so its bonus is necessarily zero.
             if result == "tie":
                 winner_bonus = 0.0
 
@@ -4861,8 +5023,8 @@ class RankerApp:
                 winner_bonus=winner_bonus,
             )
 
-                                                                
-                                                             
+            # Reset the UI bonus after the decision so it cannot
+            # accidentally carry over to the next comparison.
             self.winner_bonus_var.set("0")
 
             self.save_state()
@@ -4892,9 +5054,9 @@ class RankerApp:
 
         self.refresh()
 
-                                                              
-               
-                                                              
+    # --------------------------------------------------------
+    # Lifecycle
+    # --------------------------------------------------------
 
     def set_lifecycle(
         self,
@@ -4927,21 +5089,21 @@ class RankerApp:
         )
 
         try:
-                                       
+            # Update application state.
             self.engine.set_lifecycle(
                 book_id,
                 status,
             )
 
-                                                                 
+            # Immediately update the original Goodreads workbook.
             self.save_source_workbook()
 
-                                                            
+            # Also persist the ranker's internal JSON state.
             self.save_state()
 
         except Exception as exc:
-                                                                   
-                                   
+            # Roll back the in-memory change if the source workbook
+            # could not be updated.
             book.status = old_status
             book.shelf = old_shelf
 
@@ -5038,9 +5200,9 @@ class RankerApp:
         finally:
             menu.grab_release()
 
-                                                              
-          
-                                                              
+    # --------------------------------------------------------
+    # Undo
+    # --------------------------------------------------------
 
     def undo(self):
         if not self.engine:
@@ -5054,6 +5216,7 @@ class RankerApp:
             self.refresh()
 
     def save_source_workbook(self):
+        """Persist current shelf/status changes to the original Goodreads file."""
 
         if not self.engine or not self.source_file:
             return
@@ -5106,9 +5269,9 @@ class RankerApp:
                     exc,
                 )
 
-                                                              
-                    
-                                                              
+    # --------------------------------------------------------
+    # Ranking window
+    # --------------------------------------------------------
 
     def show_ranking(self):
         if not self.engine:
@@ -5337,9 +5500,9 @@ class RankerApp:
                 ),
             )
 
-                                                              
-                     
-                                                              
+    # --------------------------------------------------------
+    # Shortcut dialog
+    # --------------------------------------------------------
 
     def show_shortcuts(self):
         window = tk.Toplevel(
@@ -5440,9 +5603,9 @@ class RankerApp:
                 expand=True,
             )
 
-                                                              
-            
-                                                              
+    # --------------------------------------------------------
+    # Export
+    # --------------------------------------------------------
 
     def export(self):
         if (
@@ -5561,9 +5724,9 @@ class RankerApp:
                 str(exc),
             )
 
-                                                              
-                   
-                                                              
+    # --------------------------------------------------------
+    # External file
+    # --------------------------------------------------------
 
     def open_external(
         self,
@@ -5596,24 +5759,25 @@ class RankerApp:
         except Exception:
             pass
 
-                                                              
-           
-                                                              
+    # --------------------------------------------------------
+    # Close
+    # --------------------------------------------------------
 
     def close(self):
         self.save_state()
         self.root.destroy()
 
-                                                              
-           
-                                                              
+
+# ============================================================
+# SELF TEST
+# ============================================================
 
 def run_self_test():
     started = datetime.now()
 
-                                                              
-                      
-                                                              
+    # --------------------------------------------------------
+    # Glicko direction
+    # --------------------------------------------------------
 
     winner = Rating()
     loser = Rating()
@@ -5640,9 +5804,9 @@ def run_self_test():
         < loser.rating
     )
 
-                                                              
-                                            
-                                                              
+    # --------------------------------------------------------
+    # Goodreads normalized import simulation
+    # --------------------------------------------------------
 
     fake_row = {
         "book id - goodreads": "123456",
@@ -5676,9 +5840,9 @@ def run_self_test():
         == "Test Author"
     )
 
-                                                              
-                   
-                                                              
+    # --------------------------------------------------------
+    # Small library
+    # --------------------------------------------------------
 
     books = [
         Book(
@@ -5727,9 +5891,9 @@ def run_self_test():
         == 25
     )
 
-                                                              
-          
-                                                              
+    # --------------------------------------------------------
+    # Undo
+    # --------------------------------------------------------
 
     before = len(
         engine.comparisons
@@ -5742,9 +5906,9 @@ def run_self_test():
         == before - 1
     )
 
-                                                              
-                                
-                                                              
+    # --------------------------------------------------------
+    # Shelf-segmented comparison
+    # --------------------------------------------------------
     segmented_books = [
         Book(
             id="cr-1",
@@ -5777,8 +5941,8 @@ def run_self_test():
         seed=99,
     )
 
-                                                                    
-                                        
+    # When there are at least two currently-reading books, only that
+    # cohort is eligible for comparison.
     segmented_pair = segmented_engine.choose_pair()
     assert segmented_pair is not None
     assert segmented_engine._same_pairing_cohort(
@@ -5795,11 +5959,11 @@ def run_self_test():
         "left",
     )
 
-                                                                          
-                                                                 
+    # The only currently-reading pair has now been played, so the selector
+    # must not cross over to to-read merely to find another pair.
     assert segmented_engine.choose_pair() is None
 
-                                                     
+    # A separate to-read cohort still works normally.
     to_read_engine = RankingEngine(
         [
             segmented_books[2],
@@ -5814,7 +5978,7 @@ def run_self_test():
         for book_id in to_read_pair
     } == {"to-read"}
 
-                                                                          
+    # A single currently-reading book is never paired with a to-read book.
     single_current_engine = RankingEngine(
         [
             segmented_books[0],
@@ -5830,7 +5994,7 @@ def run_self_test():
         for book_id in single_current_pair
     } == {"to-read"}
 
-                                                                     
+    # Direct application of a cross-shelf comparison is rejected too.
     try:
         single_current_engine.apply_match(
             "cr-1",
@@ -5844,9 +6008,9 @@ def run_self_test():
             "Cross-shelf comparisons must be rejected."
         )
 
-                                                              
-               
-                                                              
+    # --------------------------------------------------------
+    # Lifecycle
+    # --------------------------------------------------------
 
     engine.set_lifecycle(
         "0",
@@ -5878,9 +6042,9 @@ def run_self_test():
         for book in engine.books
     )
 
-                                                              
-                                     
-                                                              
+    # --------------------------------------------------------
+    # Large library bounded selection
+    # --------------------------------------------------------
 
     large_books = [
         Book(
@@ -5900,9 +6064,9 @@ def run_self_test():
 
     assert pair is not None
 
-                                                              
-                       
-                                                              
+    # --------------------------------------------------------
+    # State persistence
+    # --------------------------------------------------------
 
     with tempfile.TemporaryDirectory() as directory:
         source = (
@@ -5960,9 +6124,9 @@ def run_self_test():
             )
         )
 
-                                                              
-                          
-                                                              
+    # --------------------------------------------------------
+    # Series ordering test
+    # --------------------------------------------------------
 
     series_books = [
         Book(
@@ -6003,9 +6167,9 @@ def run_self_test():
     ]
     assert saga_order == ["s1", "s2", "s3"], saga_order
 
-                                                              
-                                 
-                                                              
+    # --------------------------------------------------------
+    # Actual import pipeline test
+    # --------------------------------------------------------
 
     with tempfile.TemporaryDirectory() as directory:
         source = (
@@ -6141,9 +6305,10 @@ def run_self_test():
 
     return 0
 
-                                                              
-      
-                                                              
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
     if "--self-test" in sys.argv:
@@ -6158,6 +6323,7 @@ def main():
     root.mainloop()
 
     return 0
+
 
 def _test_series_import_creates_real_comparisons():
     books = [
@@ -6185,11 +6351,12 @@ def _test_series_import_creates_real_comparisons():
     )
     assert engine._apply_series_order_comparisons() == 0
 
-                                                      
+    # Different shelves are never automatically mixed.
     books[2].status = "currently-reading"
     books[2].shelf = "currently-reading"
     engine = RankingEngine(books, seed=7)
     assert engine._apply_series_order_comparisons() == 1
+
 
 def _test_manual_winner_bonus():
     books = [
@@ -6213,7 +6380,7 @@ def _test_manual_winner_bonus():
 
     after = engine.ratings["bonus-a"].rating
 
-                                                            
+    # The bonus is added on top of the normal Glicko result.
     normal_engine = RankingEngine(
         [
             Book(id="normal-a", title="Normal A", status="to-read", shelf="to-read"),
@@ -6230,11 +6397,11 @@ def _test_manual_winner_bonus():
     assert after == normal_engine.ratings["normal-a"].rating + 100
     assert engine.comparisons[-1]["winner_bonus"] == 100.0
 
-                                                                      
+    # Replaying the persisted history must reproduce the exact rating.
     engine._replay()
     assert engine.ratings["bonus-a"].rating == after
 
-                                        
+    # Tie cannot receive a winner bonus.
     tie_engine = RankingEngine(
         [
             Book(id="tie-a", title="Tie A", status="to-read", shelf="to-read"),

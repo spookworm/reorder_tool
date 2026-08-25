@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -773,20 +773,6 @@ class RankingEngine:
             right = comparison.get("right")
             result = comparison.get("result")
 
-            # Optional deterministic manual bonus recorded with the
-            # comparison.  It is applied after the normal Glicko update,
-            # so it is truly "on top of" whatever the comparison would
-            # otherwise have produced.
-            try:
-                winner_bonus = float(
-                    comparison.get("winner_bonus", 0.0)
-                )
-            except (TypeError, ValueError):
-                winner_bonus = 0.0
-
-            if not math.isfinite(winner_bonus) or winner_bonus < 0:
-                winner_bonus = 0.0
-
             if not left or not right:
                 continue
 
@@ -856,16 +842,6 @@ class RankingEngine:
                     left_rating,
                     0.5,
                 )
-
-            # Apply the optional manual winner bonus only after the
-            # normal comparison update.  This leaves the underlying
-            # Glicko calculation intact and adds exactly the requested
-            # number of rating points.
-            if winner_bonus > 0:
-                if result == "left":
-                    self.ratings[left].rating += winner_bonus
-                elif result == "right":
-                    self.ratings[right].rating += winner_bonus
 
     # --------------------------------------------------------
     # Goodreads reconciliation
@@ -1704,7 +1680,6 @@ class RankingEngine:
         right,
         result,
         source="human",
-        winner_bonus=0.0,
     ):
         if (
             left not in self.library
@@ -1752,36 +1727,12 @@ class RankingEngine:
                 "Invalid comparison source."
             )
 
-        try:
-            winner_bonus = float(winner_bonus)
-        except (TypeError, ValueError):
-            raise ValueError(
-                "Winner bonus must be a number."
-            )
-
-        if not math.isfinite(winner_bonus):
-            raise ValueError(
-                "Winner bonus must be finite."
-            )
-
-        if winner_bonus < 0:
-            raise ValueError(
-                "Winner bonus cannot be negative."
-            )
-
-        # Automatic series-order comparisons never receive a manual
-        # bonus.  They already encode their evidence through the normal
-        # comparison result.
-        if source == "series-order":
-            winner_bonus = 0.0
-
         self.comparisons.append(
             {
                 "left": left,
                 "right": right,
                 "result": result,
                 "source": source,
-                "winner_bonus": winner_bonus,
                 "time": now_iso(),
             }
         )
@@ -3049,82 +3000,6 @@ class RankerApp:
             sticky="ew",
             padx=3,
             ipady=8,
-        )
-
-        # Optional manual rating bonus applied to the winner of the
-        # next human decision.  The normal Glicko result is calculated
-        # first, then this exact number of points is added to the winner.
-        self.winner_bonus_var = tk.StringVar(
-            value="0"
-        )
-
-        bonus_frame = tk.Frame(
-            decisions,
-            bg=c["bg"],
-        )
-        bonus_frame.grid(
-            row=1,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-            pady=(5, 0),
-        )
-
-        tk.Label(
-            bonus_frame,
-            text="Extra points for winner:",
-            bg=c["bg"],
-            fg=c["muted"],
-            font=(
-                self.font,
-                9,
-            ),
-        ).pack(
-            side="left",
-            padx=(3, 6),
-        )
-
-        self.winner_bonus_spinbox = ttk.Spinbox(
-            bonus_frame,
-            from_=0,
-            to=5000,
-            increment=25,
-            textvariable=self.winner_bonus_var,
-            width=8,
-        )
-        self.winner_bonus_spinbox.pack(
-            side="left",
-        )
-
-        ttk.Button(
-            bonus_frame,
-            text="+100",
-            command=lambda: self.winner_bonus_var.set("100"),
-        ).pack(
-            side="left",
-            padx=4,
-        )
-
-        ttk.Button(
-            bonus_frame,
-            text="Clear",
-            command=lambda: self.winner_bonus_var.set("0"),
-        ).pack(
-            side="left",
-        )
-
-        tk.Label(
-            bonus_frame,
-            text="(applied only when LEFT or RIGHT wins; TIE gets no bonus)",
-            bg=c["bg"],
-            fg=c["muted"],
-            font=(
-                self.font,
-                8,
-            ),
-        ).pack(
-            side="left",
-            padx=8,
         )
 
         # Utility row.
@@ -4990,42 +4865,11 @@ class RankerApp:
         )
 
         try:
-            raw_bonus = self.winner_bonus_var.get().strip()
-
-            try:
-                winner_bonus = float(
-                    raw_bonus
-                    if raw_bonus
-                    else 0
-                )
-            except ValueError:
-                messagebox.showerror(
-                    "Invalid bonus",
-                    "Extra points must be a non-negative number.",
-                )
-                return
-
-            if not math.isfinite(winner_bonus) or winner_bonus < 0:
-                messagebox.showerror(
-                    "Invalid bonus",
-                    "Extra points must be a finite, non-negative number.",
-                )
-                return
-
-            # A tie has no winner, so its bonus is necessarily zero.
-            if result == "tie":
-                winner_bonus = 0.0
-
             self.engine.apply_match(
                 left,
                 right,
                 result,
-                winner_bonus=winner_bonus,
             )
-
-            # Reset the UI bonus after the decision so it cannot
-            # accidentally carry over to the next comparison.
-            self.winner_bonus_var.set("0")
 
             self.save_state()
 
@@ -6356,68 +6200,6 @@ def _test_series_import_creates_real_comparisons():
     books[2].shelf = "currently-reading"
     engine = RankingEngine(books, seed=7)
     assert engine._apply_series_order_comparisons() == 1
-
-
-def _test_manual_winner_bonus():
-    books = [
-        Book(id="bonus-a", title="Bonus A", status="to-read", shelf="to-read"),
-        Book(id="bonus-b", title="Bonus B", status="to-read", shelf="to-read"),
-    ]
-
-    engine = RankingEngine(
-        books,
-        seed=123,
-    )
-
-    before = engine.ratings["bonus-a"].rating
-
-    engine.apply_match(
-        "bonus-a",
-        "bonus-b",
-        "left",
-        winner_bonus=100,
-    )
-
-    after = engine.ratings["bonus-a"].rating
-
-    # The bonus is added on top of the normal Glicko result.
-    normal_engine = RankingEngine(
-        [
-            Book(id="normal-a", title="Normal A", status="to-read", shelf="to-read"),
-            Book(id="normal-b", title="Normal B", status="to-read", shelf="to-read"),
-        ],
-        seed=123,
-    )
-    normal_engine.apply_match(
-        "normal-a",
-        "normal-b",
-        "left",
-    )
-
-    assert after == normal_engine.ratings["normal-a"].rating + 100
-    assert engine.comparisons[-1]["winner_bonus"] == 100.0
-
-    # Replaying the persisted history must reproduce the exact rating.
-    engine._replay()
-    assert engine.ratings["bonus-a"].rating == after
-
-    # Tie cannot receive a winner bonus.
-    tie_engine = RankingEngine(
-        [
-            Book(id="tie-a", title="Tie A", status="to-read", shelf="to-read"),
-            Book(id="tie-b", title="Tie B", status="to-read", shelf="to-read"),
-        ],
-        seed=123,
-    )
-    tie_engine.apply_match(
-        "tie-a",
-        "tie-b",
-        "tie",
-        winner_bonus=100,
-    )
-    assert tie_engine.comparisons[-1]["winner_bonus"] == 100.0
-    assert tie_engine.ratings["tie-a"].rating < 1600
-    assert tie_engine.ratings["tie-b"].rating < 1600
 
 if __name__ == "__main__":
     try:
