@@ -1850,681 +1850,2760 @@ def export_results(
 
 
 class RankerApp:
-
     def __init__(self, root):
         self.root = root
-        self.theme_name = 'dark'
+
+        self.theme_name = "dark"
         self.colors = DARK
+
         self.engine = None
         self.source_file = None
         self.state_store = None
         self.current_pair = None
-        self.font = 'Segoe UI'
-        self.root.title(f'{APP_NAME} {APP_VERSION}')
-        self.root.geometry(f'{WINDOW_WIDTH}x{WINDOW_HEIGHT}')
-        self.root.minsize(900, 620)
+
+        self.font = "Segoe UI"
+
+        self.root.title(f"{APP_NAME} {APP_VERSION}")
+
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+
+        self.root.minsize(
+            900,
+            620,
+        )
+
         self.build_styles()
         self.build_ui()
         self.bind_shortcuts()
         self.apply_theme()
-        self.root.protocol('WM_DELETE_WINDOW', self.close)
+
+        self.root.protocol(
+            "WM_DELETE_WINDOW",
+            self.close,
+        )
 
     def build_styles(self):
         self.style = ttk.Style(self.root)
+
         try:
-            self.style.theme_use('clam')
+            self.style.theme_use("clam")
         except tk.TclError:
             pass
+
         self.configure_styles()
 
     def configure_styles(self):
         c = self.colors
-        self.style.configure('TButton', background=c['button'], foreground=c['text'], bordercolor=c['border'], padding=(10, 7), font=(self.font, 9, 'bold'))
-        self.style.map('TButton', background=[('active', c['button_hover'])])
-        self.style.configure('Choice.TButton', background=c['purple'], foreground='#FFFFFF', padding=(12, 11), font=(self.font, 11, 'bold'))
-        self.style.map('Choice.TButton', background=[('active', c['accent'])])
-        self.style.configure('Accent.TButton', background=c['accent'], foreground='#061018', padding=(10, 7), font=(self.font, 9, 'bold'))
-        self.style.configure('Treeview', background=c['panel'], fieldbackground=c['panel'], foreground=c['text'], rowheight=28)
-        self.style.configure('Treeview.Heading', background=c['button'], foreground=c['text'], font=(self.font, 9, 'bold'))
-        self.style.configure('TProgressbar', troughcolor=c['button'], background=c['accent'], bordercolor=c['border'], lightcolor=c['accent'], darkcolor=c['accent'])
+
+        self.style.configure(
+            "TButton",
+            background=c["button"],
+            foreground=c["text"],
+            bordercolor=c["border"],
+            padding=(10, 7),
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+        )
+
+        self.style.map(
+            "TButton",
+            background=[
+                (
+                    "active",
+                    c["button_hover"],
+                )
+            ],
+        )
+
+        self.style.configure(
+            "Choice.TButton",
+            background=c["purple"],
+            foreground="#FFFFFF",
+            padding=(12, 11),
+            font=(
+                self.font,
+                11,
+                "bold",
+            ),
+        )
+
+        self.style.map(
+            "Choice.TButton",
+            background=[
+                (
+                    "active",
+                    c["accent"],
+                )
+            ],
+        )
+
+        self.style.configure(
+            "Accent.TButton",
+            background=c["accent"],
+            foreground="#061018",
+            padding=(10, 7),
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+        )
+
+        self.style.configure(
+            "Treeview",
+            background=c["panel"],
+            fieldbackground=c["panel"],
+            foreground=c["text"],
+            rowheight=28,
+        )
+
+        self.style.configure(
+            "Treeview.Heading",
+            background=c["button"],
+            foreground=c["text"],
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+        )
+
+        self.style.configure(
+            "TProgressbar",
+            troughcolor=c["button"],
+            background=c["accent"],
+            bordercolor=c["border"],
+            lightcolor=c["accent"],
+            darkcolor=c["accent"],
+        )
 
     def build_ui(self):
         c = self.colors
-        self.main = tk.Frame(self.root, bg=c['bg'], padx=14, pady=12)
-        self.main.pack(fill='both', expand=True)
-        self.main.grid_columnconfigure(0, weight=1)
-        self.main.grid_rowconfigure(3, weight=1)
-        header = tk.Frame(self.main, bg=c['bg'])
-        header.grid(row=0, column=0, sticky='ew')
-        header.grid_columnconfigure(1, weight=1)
-        title = tk.Label(header, text='📚  GOODREADS TO-READ RANKER', bg=c['bg'], fg=c['text'], font=(self.font, 20, 'bold'))
-        title.grid(row=0, column=0, sticky='w')
-        subtitle = tk.Label(header, text=f'TOP-25 FOCUS  •  HUMAN CHOICES ONLY  •  ADAPTIVE EVIDENCE  •  {APP_VERSION}', bg=c['bg'], fg=c['accent'], font=(self.font, 8, 'bold'))
-        subtitle.grid(row=1, column=0, sticky='w')
-        controls = tk.Frame(header, bg=c['bg'])
-        controls.grid(row=0, column=1, rowspan=2, sticky='e')
-        self.mode_var = tk.StringVar(value='TOP_25_FOCUS')
-        mode_box = ttk.Combobox(controls, textvariable=self.mode_var, values=list(PRESETS), state='readonly', width=16)
-        mode_box.pack(side='left', padx=3)
-        mode_box.bind('<<ComboboxSelected>>', self.change_mode)
-        ttk.Button(controls, text='Open Excel', style='Accent.TButton', command=self.open_excel).pack(side='left', padx=3)
-        self.theme_button = ttk.Button(controls, text='☀ Light mode', command=self.toggle_theme)
-        self.theme_button.pack(side='left', padx=3)
-        ttk.Button(controls, text='⌨ Shortcuts', command=self.show_shortcuts).pack(side='left', padx=3)
-        dashboard = tk.Frame(self.main, bg=c['panel'], highlightthickness=1, highlightbackground=c['border'])
-        dashboard.grid(row=1, column=0, sticky='ew', pady=8)
-        self.info_var = tk.StringVar(value='Open your Goodreads Excel export to begin.')
-        tk.Label(dashboard, textvariable=self.info_var, bg=c['panel'], fg=c['text'], font=(self.font, 9, 'bold'), padx=10, pady=7, anchor='w').pack(fill='x')
-        self.progress = ttk.Progressbar(self.main, maximum=1.0)
-        self.progress.grid(row=2, column=0, sticky='ew', pady=(0, 7))
-        comparison = tk.Frame(self.main, bg=c['bg'])
-        comparison.grid(row=3, column=0, sticky='nsew')
-        comparison.grid_rowconfigure(0, weight=1)
-        comparison.grid_columnconfigure(0, weight=1)
-        comparison.grid_columnconfigure(1, weight=0)
-        comparison.grid_columnconfigure(2, weight=1)
-        self.left_card = self.create_book_card(comparison, 'left')
-        self.left_card.grid(row=0, column=0, sticky='nsew', padx=(0, 6))
-        tk.Label(comparison, text='VS', bg=c['bg'], fg=c['purple'], font=(self.font, 15, 'bold')).grid(row=0, column=1, padx=4)
-        self.right_card = self.create_book_card(comparison, 'right')
-        self.right_card.grid(row=0, column=2, sticky='nsew', padx=(6, 0))
-        decisions = tk.Frame(self.main, bg=c['bg'])
-        decisions.grid(row=4, column=0, sticky='ew', pady=7)
+
+        self.main = tk.Frame(
+            self.root,
+            bg=c["bg"],
+            padx=14,
+            pady=12,
+        )
+
+        self.main.pack(
+            fill="both",
+            expand=True,
+        )
+
+        self.main.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        self.main.grid_rowconfigure(
+            3,
+            weight=1,
+        )
+
+        header = tk.Frame(
+            self.main,
+            bg=c["bg"],
+        )
+
+        header.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+        )
+
+        header.grid_columnconfigure(
+            1,
+            weight=1,
+        )
+
+        title = tk.Label(
+            header,
+            text=("📚  GOODREADS " "TO-READ RANKER"),
+            bg=c["bg"],
+            fg=c["text"],
+            font=(
+                self.font,
+                20,
+                "bold",
+            ),
+        )
+
+        title.grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+
+        subtitle = tk.Label(
+            header,
+            text=(
+                "TOP-25 FOCUS  •  "
+                "HUMAN CHOICES ONLY  •  "
+                "ADAPTIVE EVIDENCE  •  "
+                f"{APP_VERSION}"
+            ),
+            bg=c["bg"],
+            fg=c["accent"],
+            font=(
+                self.font,
+                8,
+                "bold",
+            ),
+        )
+
+        subtitle.grid(
+            row=1,
+            column=0,
+            sticky="w",
+        )
+
+        controls = tk.Frame(
+            header,
+            bg=c["bg"],
+        )
+
+        controls.grid(
+            row=0,
+            column=1,
+            rowspan=2,
+            sticky="e",
+        )
+
+        self.mode_var = tk.StringVar(value="TOP_25_FOCUS")
+
+        mode_box = ttk.Combobox(
+            controls,
+            textvariable=self.mode_var,
+            values=list(PRESETS),
+            state="readonly",
+            width=16,
+        )
+
+        mode_box.pack(
+            side="left",
+            padx=3,
+        )
+
+        mode_box.bind(
+            "<<ComboboxSelected>>",
+            self.change_mode,
+        )
+
+        ttk.Button(
+            controls,
+            text="Open Excel",
+            style="Accent.TButton",
+            command=self.open_excel,
+        ).pack(
+            side="left",
+            padx=3,
+        )
+
+        self.theme_button = ttk.Button(
+            controls,
+            text="☀ Light mode",
+            command=self.toggle_theme,
+        )
+
+        self.theme_button.pack(
+            side="left",
+            padx=3,
+        )
+
+        ttk.Button(
+            controls,
+            text="⌨ Shortcuts",
+            command=self.show_shortcuts,
+        ).pack(
+            side="left",
+            padx=3,
+        )
+
+        dashboard = tk.Frame(
+            self.main,
+            bg=c["panel"],
+            highlightthickness=1,
+            highlightbackground=c["border"],
+        )
+
+        dashboard.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=8,
+        )
+
+        self.info_var = tk.StringVar(
+            value=("Open your Goodreads " "Excel export to begin.")
+        )
+
+        tk.Label(
+            dashboard,
+            textvariable=self.info_var,
+            bg=c["panel"],
+            fg=c["text"],
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+            padx=10,
+            pady=7,
+            anchor="w",
+        ).pack(fill="x")
+
+        self.progress = ttk.Progressbar(
+            self.main,
+            maximum=1.0,
+        )
+
+        self.progress.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            pady=(0, 7),
+        )
+
+        comparison = tk.Frame(
+            self.main,
+            bg=c["bg"],
+        )
+
+        comparison.grid(
+            row=3,
+            column=0,
+            sticky="nsew",
+        )
+
+        comparison.grid_rowconfigure(
+            0,
+            weight=1,
+        )
+
+        comparison.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        comparison.grid_columnconfigure(
+            1,
+            weight=0,
+        )
+
+        comparison.grid_columnconfigure(
+            2,
+            weight=1,
+        )
+
+        self.left_card = self.create_book_card(
+            comparison,
+            "left",
+        )
+
+        self.left_card.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 6),
+        )
+
+        tk.Label(
+            comparison,
+            text="VS",
+            bg=c["bg"],
+            fg=c["purple"],
+            font=(
+                self.font,
+                15,
+                "bold",
+            ),
+        ).grid(
+            row=0,
+            column=1,
+            padx=4,
+        )
+
+        self.right_card = self.create_book_card(
+            comparison,
+            "right",
+        )
+
+        self.right_card.grid(
+            row=0,
+            column=2,
+            sticky="nsew",
+            padx=(6, 0),
+        )
+
+        decisions = tk.Frame(
+            self.main,
+            bg=c["bg"],
+        )
+
+        decisions.grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            pady=7,
+        )
+
         for column in range(3):
-            decisions.grid_columnconfigure(column, weight=1)
-        self.left_button = ttk.Button(decisions, text='←  CHOOSE LEFT  [1]', style='Choice.TButton', command=lambda: self.choose('left'))
-        self.left_button.grid(row=0, column=0, sticky='ew', padx=3, ipady=8)
-        self.tie_button = ttk.Button(decisions, text='≈  TIE  [3 / T]', style='Choice.TButton', command=lambda: self.choose('tie'))
-        self.tie_button.grid(row=0, column=1, sticky='ew', padx=3, ipady=8)
-        self.right_button = ttk.Button(decisions, text='CHOOSE RIGHT  [2]  →', style='Choice.TButton', command=lambda: self.choose('right'))
-        self.right_button.grid(row=0, column=2, sticky='ew', padx=3, ipady=8)
-        self.winner_bonus_var = tk.StringVar(value='0')
-        bonus_frame = tk.Frame(decisions, bg=c['bg'])
-        bonus_frame.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(5, 0))
-        tk.Label(bonus_frame, text='Extra points for winner:', bg=c['bg'], fg=c['muted'], font=(self.font, 9)).pack(side='left', padx=(3, 6))
-        self.winner_bonus_spinbox = ttk.Spinbox(bonus_frame, from_=0, to=5000, increment=25, textvariable=self.winner_bonus_var, width=8)
-        self.winner_bonus_spinbox.pack(side='left')
-        ttk.Button(bonus_frame, text='+100', command=lambda: self.winner_bonus_var.set('100')).pack(side='left', padx=4)
-        ttk.Button(bonus_frame, text='Clear', command=lambda: self.winner_bonus_var.set('0')).pack(side='left')
-        tk.Label(bonus_frame, text='(applied only when LEFT or RIGHT wins; TIE gets no bonus)', bg=c['bg'], fg=c['muted'], font=(self.font, 8)).pack(side='left', padx=8)
-        utility = tk.Frame(self.main, bg=c['bg'])
-        utility.grid(row=5, column=0, sticky='ew')
-        utility_buttons = [('↶ Undo [U]', self.undo), ('Skip [4 / S]', self.skip), ('Ranking', self.show_ranking), ('Export [Ctrl+E]', self.export), ('Overwrite + Backup', self.overwrite_source)]
+            decisions.grid_columnconfigure(
+                column,
+                weight=1,
+            )
+
+        self.left_button = ttk.Button(
+            decisions,
+            text="←  CHOOSE LEFT  [1]",
+            style="Choice.TButton",
+            command=lambda: self.choose("left"),
+        )
+
+        self.left_button.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=3,
+            ipady=8,
+        )
+
+        self.tie_button = ttk.Button(
+            decisions,
+            text="≈  TIE  [3 / T]",
+            style="Choice.TButton",
+            command=lambda: self.choose("tie"),
+        )
+
+        self.tie_button.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=3,
+            ipady=8,
+        )
+
+        self.right_button = ttk.Button(
+            decisions,
+            text="CHOOSE RIGHT  [2]  →",
+            style="Choice.TButton",
+            command=lambda: self.choose("right"),
+        )
+
+        self.right_button.grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=3,
+            ipady=8,
+        )
+
+        self.winner_bonus_var = tk.StringVar(value="0")
+
+        bonus_frame = tk.Frame(
+            decisions,
+            bg=c["bg"],
+        )
+        bonus_frame.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(5, 0),
+        )
+
+        tk.Label(
+            bonus_frame,
+            text="Extra points for winner:",
+            bg=c["bg"],
+            fg=c["muted"],
+            font=(
+                self.font,
+                9,
+            ),
+        ).pack(
+            side="left",
+            padx=(3, 6),
+        )
+
+        self.winner_bonus_spinbox = ttk.Spinbox(
+            bonus_frame,
+            from_=0,
+            to=5000,
+            increment=25,
+            textvariable=self.winner_bonus_var,
+            width=8,
+        )
+        self.winner_bonus_spinbox.pack(
+            side="left",
+        )
+
+        ttk.Button(
+            bonus_frame,
+            text="+100",
+            command=lambda: self.winner_bonus_var.set("100"),
+        ).pack(
+            side="left",
+            padx=4,
+        )
+
+        ttk.Button(
+            bonus_frame,
+            text="Clear",
+            command=lambda: self.winner_bonus_var.set("0"),
+        ).pack(
+            side="left",
+        )
+
+        tk.Label(
+            bonus_frame,
+            text="(applied only when LEFT or RIGHT wins; TIE gets no bonus)",
+            bg=c["bg"],
+            fg=c["muted"],
+            font=(
+                self.font,
+                8,
+            ),
+        ).pack(
+            side="left",
+            padx=8,
+        )
+
+        utility = tk.Frame(
+            self.main,
+            bg=c["bg"],
+        )
+
+        utility.grid(
+            row=5,
+            column=0,
+            sticky="ew",
+        )
+
+        utility_buttons = [
+            (
+                "↶ Undo [U]",
+                self.undo,
+            ),
+            (
+                "Skip [4 / S]",
+                self.skip,
+            ),
+            (
+                "Ranking",
+                self.show_ranking,
+            ),
+            (
+                "Export [Ctrl+E]",
+                self.export,
+            ),
+            (
+                "Overwrite + Backup",
+                self.overwrite_source,
+            ),
+        ]
+
         for text, command in utility_buttons:
-            ttk.Button(utility, text=text, command=command).pack(side='left', padx=3)
-        self.shortcut_panel = tk.Frame(self.main, bg=c['panel'], highlightthickness=1, highlightbackground=c['border'])
-        self.shortcut_panel.grid(row=6, column=0, sticky='ew', pady=(7, 0))
+            ttk.Button(
+                utility,
+                text=text,
+                command=command,
+            ).pack(
+                side="left",
+                padx=3,
+            )
+
+        self.shortcut_panel = tk.Frame(
+            self.main,
+            bg=c["panel"],
+            highlightthickness=1,
+            highlightbackground=c["border"],
+        )
+
+        self.shortcut_panel.grid(
+            row=6,
+            column=0,
+            sticky="ew",
+            pady=(7, 0),
+        )
+
         self.build_shortcut_panel()
 
-    def create_book_card(self, parent, side):
+    def create_book_card(
+        self,
+        parent,
+        side,
+    ):
         c = self.colors
-        card = tk.Frame(parent, bg=c['card'], highlightthickness=1, highlightbackground=c['border'], cursor='hand2')
-        card.grid_rowconfigure(5, weight=1)
-        card.grid_columnconfigure(0, weight=1)
-        card.grid_columnconfigure(1, weight=0)
-        title_var = tk.StringVar(value='Waiting for a library…')
+
+        card = tk.Frame(
+            parent,
+            bg=c["card"],
+            highlightthickness=1,
+            highlightbackground=c["border"],
+            cursor="hand2",
+        )
+
+        card.grid_rowconfigure(
+            5,
+            weight=1,
+        )
+
+        card.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        card.grid_columnconfigure(
+            1,
+            weight=0,
+        )
+
+        title_var = tk.StringVar(value="Waiting for a library…")
+
         author_var = tk.StringVar()
         meta_var = tk.StringVar()
         status_var = tk.StringVar()
-        setattr(self, f'{side}_title', title_var)
-        setattr(self, f'{side}_author', author_var)
-        setattr(self, f'{side}_meta', meta_var)
-        setattr(self, f'{side}_status', status_var)
-        tk.Label(card, textvariable=status_var, bg=c['card2'], fg=c['accent'], font=(self.font, 8, 'bold'), padx=8, pady=3).grid(row=0, column=0, columnspan=2, sticky='w', padx=10, pady=(8, 3))
-        title_label = tk.Label(card, textvariable=title_var, bg=c['card'], fg=c['text'], font=(self.font, 16, 'bold'), wraplength=450, justify='center')
-        title_label.grid(row=1, column=0, columnspan=2, sticky='ew', padx=14, pady=(6, 4))
-        search_button = tk.Button(card, text='🔎  Search this book', bg=c['button'], fg=c['text'], activebackground=c['button_hover'], activeforeground=c['accent'], font=(self.font, 9, 'bold'), relief='flat', bd=0, cursor='hand2', padx=12, pady=6, command=lambda current_side=side: self.search_current_book(current_side))
-        edit_button = tk.Button(card, text='✏️  Edit book', bg=c['button'], fg=c['text'], activebackground=c['button_hover'], activeforeground=c['accent'], font=(self.font, 9, 'bold'), relief='flat', bd=0, cursor='hand2', padx=12, pady=6, command=lambda current_side=side: self.edit_current_book(current_side))
-        edit_button.grid(row=2, column=1, sticky='e', padx=(4, 14), pady=(0, 6))
-        search_button.grid(row=2, column=0, sticky='ew', padx=14, pady=(0, 6))
-        tk.Label(card, textvariable=author_var, bg=c['card'], fg=c['muted'], font=(self.font, 10), wraplength=450).grid(row=3, column=0, columnspan=2, sticky='ew', padx=14)
-        tk.Label(card, textvariable=meta_var, bg=c['card'], fg=c['muted'], font=(self.font, 8), wraplength=450).grid(row=4, column=0, columnspan=2, sticky='ew', padx=10, pady=4)
-        details = tk.Text(card, height=13, wrap='word', bg=c['card'], fg=c['text'], insertbackground=c['text'], selectbackground=c['card2'], selectforeground=c['text'], relief='flat', bd=0, font=(self.font, 9), padx=4, pady=4)
-        details.grid(row=5, column=0, sticky='nsew', padx=(10, 0), pady=(2, 0))
-        scrollbar = ttk.Scrollbar(card, orient='vertical', command=details.yview)
-        scrollbar.grid(row=5, column=1, sticky='ns', padx=(0, 8), pady=(2, 0))
-        details.configure(state='disabled', yscrollcommand=scrollbar.set)
-        setattr(self, f'{side}_details', details)
-        setattr(self, f'{side}_description', details)
-        lifecycle = tk.Frame(card, bg=c['card'])
-        lifecycle.grid(row=6, column=0, columnspan=2, sticky='ew', padx=8, pady=7)
+
+        setattr(
+            self,
+            f"{side}_title",
+            title_var,
+        )
+
+        setattr(
+            self,
+            f"{side}_author",
+            author_var,
+        )
+
+        setattr(
+            self,
+            f"{side}_meta",
+            meta_var,
+        )
+
+        setattr(
+            self,
+            f"{side}_status",
+            status_var,
+        )
+
+        tk.Label(
+            card,
+            textvariable=status_var,
+            bg=c["card2"],
+            fg=c["accent"],
+            font=(
+                self.font,
+                8,
+                "bold",
+            ),
+            padx=8,
+            pady=3,
+        ).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=10,
+            pady=(8, 3),
+        )
+
+        title_label = tk.Label(
+            card,
+            textvariable=title_var,
+            bg=c["card"],
+            fg=c["text"],
+            font=(
+                self.font,
+                16,
+                "bold",
+            ),
+            wraplength=450,
+            justify="center",
+        )
+
+        title_label.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=14,
+            pady=(6, 4),
+        )
+
+        search_button = tk.Button(
+            card,
+            text="🔎  Search this book",
+            bg=c["button"],
+            fg=c["text"],
+            activebackground=c["button_hover"],
+            activeforeground=c["accent"],
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=12,
+            pady=6,
+            command=lambda current_side=side: self.search_current_book(
+                current_side
+            ),
+        )
+        edit_button = tk.Button(
+            card,
+            text="✏️  Edit book",
+            bg=c["button"],
+            fg=c["text"],
+            activebackground=c["button_hover"],
+            activeforeground=c["accent"],
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=12,
+            pady=6,
+            command=lambda current_side=side: self.edit_current_book(
+                current_side
+            ),
+        )
+
+        edit_button.grid(
+            row=2,
+            column=1,
+            sticky="e",
+            padx=(4, 14),
+            pady=(0, 6),
+        )
+        search_button.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(0, 6),
+        )
+
+        tk.Label(
+            card,
+            textvariable=author_var,
+            bg=c["card"],
+            fg=c["muted"],
+            font=(
+                self.font,
+                10,
+            ),
+            wraplength=450,
+        ).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=14,
+        )
+
+        tk.Label(
+            card,
+            textvariable=meta_var,
+            bg=c["card"],
+            fg=c["muted"],
+            font=(
+                self.font,
+                8,
+            ),
+            wraplength=450,
+        ).grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=10,
+            pady=4,
+        )
+
+        details = tk.Text(
+            card,
+            height=13,
+            wrap="word",
+            bg=c["card"],
+            fg=c["text"],
+            insertbackground=c["text"],
+            selectbackground=c["card2"],
+            selectforeground=c["text"],
+            relief="flat",
+            bd=0,
+            font=(
+                self.font,
+                9,
+            ),
+            padx=4,
+            pady=4,
+        )
+
+        details.grid(
+            row=5,
+            column=0,
+            sticky="nsew",
+            padx=(10, 0),
+            pady=(2, 0),
+        )
+
+        scrollbar = ttk.Scrollbar(
+            card,
+            orient="vertical",
+            command=details.yview,
+        )
+
+        scrollbar.grid(
+            row=5,
+            column=1,
+            sticky="ns",
+            padx=(0, 8),
+            pady=(2, 0),
+        )
+
+        details.configure(
+            state="disabled",
+            yscrollcommand=scrollbar.set,
+        )
+
+        setattr(
+            self,
+            f"{side}_details",
+            details,
+        )
+
+        setattr(
+            self,
+            f"{side}_description",
+            details,
+        )
+
+        lifecycle = tk.Frame(
+            card,
+            bg=c["card"],
+        )
+
+        lifecycle.grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=7,
+        )
+
         for index in range(4):
-            lifecycle.grid_columnconfigure(index, weight=1)
-        actions = [('📖 Reading', 'currently-reading'), ('✓ Read', 'read'), ('🚫 Ignore', 'ignore'), ('↺ To-read', 'to-read')]
-        for index, (text, status) in enumerate(actions):
-            ttk.Button(lifecycle, text=text, command=lambda s=status, current_side=side: self.set_lifecycle(current_side, s)).grid(row=0, column=index, sticky='ew', padx=2)
-        self.bind_card_clicks(card, side)
+            lifecycle.grid_columnconfigure(
+                index,
+                weight=1,
+            )
+
+        actions = [
+            (
+                "📖 Reading",
+                "currently-reading",
+            ),
+            (
+                "✓ Read",
+                "read",
+            ),
+            (
+                "🚫 Ignore",
+                "ignore",
+            ),
+            (
+                "↺ To-read",
+                "to-read",
+            ),
+        ]
+
+        for index, (
+            text,
+            status,
+        ) in enumerate(actions):
+            ttk.Button(
+                lifecycle,
+                text=text,
+                command=lambda s=status, current_side=side: self.set_lifecycle(
+                    current_side,
+                    s,
+                ),
+            ).grid(
+                row=0,
+                column=index,
+                sticky="ew",
+                padx=2,
+            )
+
+        self.bind_card_clicks(
+            card,
+            side,
+        )
+
         return card
 
-    def bind_card_clicks(self, widget, side):
-        widget.bind('<Button-1>', lambda event: self.lifecycle_menu(event, side))
+    def bind_card_clicks(
+        self,
+        widget,
+        side,
+    ):
+
+        widget.bind(
+            "<Button-1>",
+            lambda event: self.lifecycle_menu(
+                event,
+                side,
+            ),
+        )
 
     def toggle_theme(self):
-        self.theme_name = 'light' if self.theme_name == 'dark' else 'dark'
-        self.colors = LIGHT if self.theme_name == 'light' else DARK
+        self.theme_name = "light" if self.theme_name == "dark" else "dark"
+
+        self.colors = LIGHT if self.theme_name == "light" else DARK
+
         self.apply_theme()
 
     def apply_theme(self):
         c = self.colors
-        self.root.configure(bg=c['bg'])
+
+        self.root.configure(bg=c["bg"])
+
         self.configure_styles()
-        self.theme_button.configure(text='☀ Light mode' if self.theme_name == 'dark' else '🌙 Dark mode')
+
+        self.theme_button.configure(
+            text=(
+                "☀ Light mode" if self.theme_name == "dark" else "🌙 Dark mode"
+            )
+        )
+
         self.rebuild_ui_theme(self.root)
+
         if self.engine:
             self.refresh()
 
-    def rebuild_ui_theme(self, widget):
+    def rebuild_ui_theme(
+        self,
+        widget,
+    ):
         c = self.colors
+
         try:
-            if isinstance(widget, tk.Text):
-                widget.configure(bg=c['card'], fg=c['text'], insertbackground=c['text'])
-            elif isinstance(widget, tk.Frame):
-                current_bg = widget.cget('bg')
-                if current_bg in {DARK['bg'], LIGHT['bg']}:
-                    widget.configure(bg=c['bg'])
-                elif current_bg in {DARK['panel'], LIGHT['panel']}:
-                    widget.configure(bg=c['panel'])
-                elif current_bg in {DARK['card'], LIGHT['card']}:
-                    widget.configure(bg=c['card'])
-                elif current_bg in {DARK['card2'], LIGHT['card2']}:
-                    widget.configure(bg=c['card2'])
-            elif isinstance(widget, tk.Label):
-                current_bg = widget.cget('bg')
-                if current_bg in {DARK['bg'], LIGHT['bg']}:
-                    widget.configure(bg=c['bg'])
-                elif current_bg in {DARK['panel'], LIGHT['panel']}:
-                    widget.configure(bg=c['panel'])
-                elif current_bg in {DARK['card'], LIGHT['card']}:
-                    widget.configure(bg=c['card'])
-                elif current_bg in {DARK['card2'], LIGHT['card2']}:
-                    widget.configure(bg=c['card2'])
+            if isinstance(
+                widget,
+                tk.Text,
+            ):
+                widget.configure(
+                    bg=c["card"],
+                    fg=c["text"],
+                    insertbackground=c["text"],
+                )
+
+            elif isinstance(
+                widget,
+                tk.Frame,
+            ):
+                current_bg = widget.cget("bg")
+
+                if current_bg in {
+                    DARK["bg"],
+                    LIGHT["bg"],
+                }:
+                    widget.configure(bg=c["bg"])
+
+                elif current_bg in {
+                    DARK["panel"],
+                    LIGHT["panel"],
+                }:
+                    widget.configure(bg=c["panel"])
+
+                elif current_bg in {
+                    DARK["card"],
+                    LIGHT["card"],
+                }:
+                    widget.configure(bg=c["card"])
+
+                elif current_bg in {
+                    DARK["card2"],
+                    LIGHT["card2"],
+                }:
+                    widget.configure(bg=c["card2"])
+
+            elif isinstance(
+                widget,
+                tk.Label,
+            ):
+                current_bg = widget.cget("bg")
+
+                if current_bg in {
+                    DARK["bg"],
+                    LIGHT["bg"],
+                }:
+                    widget.configure(bg=c["bg"])
+
+                elif current_bg in {
+                    DARK["panel"],
+                    LIGHT["panel"],
+                }:
+                    widget.configure(bg=c["panel"])
+
+                elif current_bg in {
+                    DARK["card"],
+                    LIGHT["card"],
+                }:
+                    widget.configure(bg=c["card"])
+
+                elif current_bg in {
+                    DARK["card2"],
+                    LIGHT["card2"],
+                }:
+                    widget.configure(bg=c["card2"])
+
         except tk.TclError:
             pass
+
         for child in widget.winfo_children():
             self.rebuild_ui_theme(child)
 
     def bind_shortcuts(self):
         root = self.root
-        root.bind_all('<KeyPress-1>', lambda event: self.choose('left'))
-        root.bind_all('<KeyPress-2>', lambda event: self.choose('right'))
-        root.bind_all('<KeyPress-3>', lambda event: self.choose('tie'))
-        root.bind_all('<KeyPress-t>', lambda event: self.choose('tie'))
-        root.bind_all('<KeyPress-T>', lambda event: self.choose('tie'))
-        root.bind_all('<KeyPress-4>', lambda event: self.skip())
-        root.bind_all('<KeyPress-s>', lambda event: self.skip())
-        root.bind_all('<KeyPress-S>', lambda event: self.skip())
-        root.bind_all('<Left>', lambda event: self.choose('left'))
-        root.bind_all('<Right>', lambda event: self.choose('right'))
-        root.bind_all('<KeyPress-u>', lambda event: self.undo())
-        root.bind_all('<KeyPress-U>', lambda event: self.undo())
-        root.bind_all('<KeyPress-i>', lambda event: self.set_lifecycle('left', 'ignore'))
-        root.bind_all('<KeyPress-r>', lambda event: self.set_lifecycle('left', 'read'))
-        root.bind_all('<KeyPress-c>', lambda event: self.set_lifecycle('left', 'currently-reading'))
-        root.bind_all('<Shift-I>', lambda event: self.set_lifecycle('right', 'ignore'))
-        root.bind_all('<Shift-R>', lambda event: self.set_lifecycle('right', 'read'))
-        root.bind_all('<Shift-C>', lambda event: self.set_lifecycle('right', 'currently-reading'))
-        root.bind_all('<Control-o>', lambda event: self.open_excel())
-        root.bind_all('<Control-e>', lambda event: self.export())
+
+        root.bind_all(
+            "<KeyPress-1>",
+            lambda event: self.choose("left"),
+        )
+
+        root.bind_all(
+            "<KeyPress-2>",
+            lambda event: self.choose("right"),
+        )
+
+        root.bind_all(
+            "<KeyPress-3>",
+            lambda event: self.choose("tie"),
+        )
+
+        root.bind_all(
+            "<KeyPress-t>",
+            lambda event: self.choose("tie"),
+        )
+
+        root.bind_all(
+            "<KeyPress-T>",
+            lambda event: self.choose("tie"),
+        )
+
+        root.bind_all(
+            "<KeyPress-4>",
+            lambda event: self.skip(),
+        )
+
+        root.bind_all(
+            "<KeyPress-s>",
+            lambda event: self.skip(),
+        )
+
+        root.bind_all(
+            "<KeyPress-S>",
+            lambda event: self.skip(),
+        )
+
+        root.bind_all(
+            "<Left>",
+            lambda event: self.choose("left"),
+        )
+
+        root.bind_all(
+            "<Right>",
+            lambda event: self.choose("right"),
+        )
+
+        root.bind_all(
+            "<KeyPress-u>",
+            lambda event: self.undo(),
+        )
+
+        root.bind_all(
+            "<KeyPress-U>",
+            lambda event: self.undo(),
+        )
+
+        root.bind_all(
+            "<KeyPress-i>",
+            lambda event: self.set_lifecycle(
+                "left",
+                "ignore",
+            ),
+        )
+
+        root.bind_all(
+            "<KeyPress-r>",
+            lambda event: self.set_lifecycle(
+                "left",
+                "read",
+            ),
+        )
+
+        root.bind_all(
+            "<KeyPress-c>",
+            lambda event: self.set_lifecycle(
+                "left",
+                "currently-reading",
+            ),
+        )
+
+        root.bind_all(
+            "<Shift-I>",
+            lambda event: self.set_lifecycle(
+                "right",
+                "ignore",
+            ),
+        )
+
+        root.bind_all(
+            "<Shift-R>",
+            lambda event: self.set_lifecycle(
+                "right",
+                "read",
+            ),
+        )
+
+        root.bind_all(
+            "<Shift-C>",
+            lambda event: self.set_lifecycle(
+                "right",
+                "currently-reading",
+            ),
+        )
+
+        root.bind_all(
+            "<Control-o>",
+            lambda event: self.open_excel(),
+        )
+
+        root.bind_all(
+            "<Control-e>",
+            lambda event: self.export(),
+        )
 
     def build_shortcut_panel(self):
         c = self.colors
-        tk.Label(self.shortcut_panel, text='⌨  QUICK KEYBOARD REFERENCE', bg=c['panel'], fg=c['accent'], font=(self.font, 9, 'bold')).pack(anchor='w', padx=9, pady=(5, 1))
-        shortcuts = [('1', 'Choose LEFT'), ('2', 'Choose RIGHT'), ('3 / T', 'Tie'), ('4 / S', 'Skip'), ('← / →', 'Choose left / right'), ('U', 'Undo'), ('I', 'Mark LEFT Ignore'), ('R', 'Mark LEFT Read'), ('C', 'Mark LEFT Currently Reading'), ('Shift+I', 'Mark RIGHT Ignore'), ('Shift+R', 'Mark RIGHT Read'), ('Shift+C', 'Mark RIGHT Currently Reading'), ('Ctrl+O', 'Open Goodreads Excel'), ('Ctrl+E', 'Export Ranking'), ('Click book card', 'Open lifecycle menu')]
-        grid = tk.Frame(self.shortcut_panel, bg=c['panel'])
-        grid.pack(fill='x', padx=8, pady=(0, 6))
-        for index, (key, description) in enumerate(shortcuts):
+
+        tk.Label(
+            self.shortcut_panel,
+            text=("⌨  QUICK KEYBOARD REFERENCE"),
+            bg=c["panel"],
+            fg=c["accent"],
+            font=(
+                self.font,
+                9,
+                "bold",
+            ),
+        ).pack(
+            anchor="w",
+            padx=9,
+            pady=(5, 1),
+        )
+
+        shortcuts = [
+            ("1", "Choose LEFT"),
+            ("2", "Choose RIGHT"),
+            ("3 / T", "Tie"),
+            ("4 / S", "Skip"),
+            ("← / →", "Choose left / right"),
+            ("U", "Undo"),
+            ("I", "Mark LEFT Ignore"),
+            ("R", "Mark LEFT Read"),
+            ("C", "Mark LEFT Currently Reading"),
+            ("Shift+I", "Mark RIGHT Ignore"),
+            ("Shift+R", "Mark RIGHT Read"),
+            ("Shift+C", "Mark RIGHT Currently Reading"),
+            ("Ctrl+O", "Open Goodreads Excel"),
+            ("Ctrl+E", "Export Ranking"),
+            ("Click book card", "Open lifecycle menu"),
+        ]
+
+        grid = tk.Frame(
+            self.shortcut_panel,
+            bg=c["panel"],
+        )
+
+        grid.pack(
+            fill="x",
+            padx=8,
+            pady=(0, 6),
+        )
+
+        for index, (
+            key,
+            description,
+        ) in enumerate(shortcuts):
+
             row = index // 3
             column = index % 3
-            cell = tk.Frame(grid, bg=c['panel'])
-            cell.grid(row=row, column=column, sticky='ew', padx=3, pady=1)
-            grid.grid_columnconfigure(column, weight=1)
-            tk.Label(cell, text=key, bg=c['panel'], fg=c['accent'], font=('Consolas', 8, 'bold'), width=12, anchor='w').pack(side='left')
-            tk.Label(cell, text=description, bg=c['panel'], fg=c['text'], font=(self.font, 8), anchor='w').pack(side='left', fill='x', expand=True)
+
+            cell = tk.Frame(
+                grid,
+                bg=c["panel"],
+            )
+
+            cell.grid(
+                row=row,
+                column=column,
+                sticky="ew",
+                padx=3,
+                pady=1,
+            )
+
+            grid.grid_columnconfigure(
+                column,
+                weight=1,
+            )
+
+            tk.Label(
+                cell,
+                text=key,
+                bg=c["panel"],
+                fg=c["accent"],
+                font=(
+                    "Consolas",
+                    8,
+                    "bold",
+                ),
+                width=12,
+                anchor="w",
+            ).pack(side="left")
+
+            tk.Label(
+                cell,
+                text=description,
+                bg=c["panel"],
+                fg=c["text"],
+                font=(
+                    self.font,
+                    8,
+                ),
+                anchor="w",
+            ).pack(
+                side="left",
+                fill="x",
+                expand=True,
+            )
 
     def open_excel(self):
-        path = filedialog.askopenfilename(title='Open Goodreads Excel', filetypes=[('Excel workbooks', '*.xlsx *.xlsm'), ('All files', '*.*')])
+        path = filedialog.askopenfilename(
+            title="Open Goodreads Excel",
+            filetypes=[
+                (
+                    "Excel workbooks",
+                    "*.xlsx *.xlsm",
+                ),
+                (
+                    "All files",
+                    "*.*",
+                ),
+            ],
+        )
+
         if not path:
             return
+
         try:
             rows = import_goodreads(path)
+
             if not rows:
-                raise ValueError('No Goodreads books were found in this workbook.')
+                raise ValueError(
+                    "No Goodreads books were found " "in this workbook."
+                )
+
             self.source_file = Path(path)
+
             self.state_store = StateStore(self.source_file)
+
             raw_state = self.state_store.load_raw()
-            books = [book_from_row(row) for row in rows if isinstance(row, dict)]
+
+            books = [
+                book_from_row(row) for row in rows if isinstance(row, dict)
+            ]
+
             if not books:
-                raise ValueError('The workbook contained rows, but none could be converted into books.')
+                raise ValueError(
+                    "The workbook contained rows, but "
+                    "none could be converted into books."
+                )
+
             if raw_state:
-                saved_books = raw_state.get('books', {})
-                if not isinstance(saved_books, dict):
+                saved_books = raw_state.get(
+                    "books",
+                    {},
+                )
+
+                if not isinstance(
+                    saved_books,
+                    dict,
+                ):
                     saved_books = {}
+
                 for book in books:
                     saved = saved_books.get(book.id)
-                    if not isinstance(saved, dict):
-                        continue
-                    saved_status = saved.get('status')
-                    shelf = book.shelf
-                    if saved_status in RankingEngine.ALL_STATUSES:
-                        if saved_status == 'ignore' and shelf == 'to-read':
-                            book.status = 'ignore'
-                        elif saved_status == 'currently-reading' and shelf in {'to-read', 'currently-reading'}:
-                            book.status = 'currently-reading'
-                saved_statuses = {key: value.get('status', 'to-read') for key, value in saved_books.items() if isinstance(value, dict)}
-                self.engine = RankingEngine(books, mode=raw_state.get('mode', 'TOP_25_FOCUS'), seed=raw_state.get('seed'), comparisons=raw_state.get('comparisons', []), statuses=saved_statuses, skips=raw_state.get('skips', {}))
-                self.engine.sync_goodreads(rows)
-                self.mode_var.set(self.engine.mode)
-            else:
-                self.engine = RankingEngine(books, mode=self.mode_var.get())
-            self.state_store.save(self.engine)
-            self.current_pair = None
-            self.refresh()
-        except Exception as exc:
-            messagebox.showerror('Could not open Goodreads workbook', f"{exc}\n\nIf this is a Goodreads export, make sure the workbook contains a 'Title' column.")
 
-    def change_mode(self, _event=None):
+                    if not isinstance(
+                        saved,
+                        dict,
+                    ):
+                        continue
+
+                    saved_status = saved.get("status")
+
+                    shelf = book.shelf
+
+                    if saved_status in RankingEngine.ALL_STATUSES:
+                        if saved_status == "ignore" and shelf == "to-read":
+                            book.status = "ignore"
+
+                        elif saved_status == "currently-reading" and shelf in {
+                            "to-read",
+                            "currently-reading",
+                        }:
+                            book.status = "currently-reading"
+
+                saved_statuses = {
+                    key: value.get(
+                        "status",
+                        "to-read",
+                    )
+                    for key, value in saved_books.items()
+                    if isinstance(
+                        value,
+                        dict,
+                    )
+                }
+
+                self.engine = RankingEngine(
+                    books,
+                    mode=raw_state.get(
+                        "mode",
+                        "TOP_25_FOCUS",
+                    ),
+                    seed=raw_state.get("seed"),
+                    comparisons=raw_state.get(
+                        "comparisons",
+                        [],
+                    ),
+                    statuses=saved_statuses,
+                    skips=raw_state.get(
+                        "skips",
+                        {},
+                    ),
+                )
+
+                self.engine.sync_goodreads(rows)
+
+                self.mode_var.set(self.engine.mode)
+
+            else:
+                self.engine = RankingEngine(
+                    books,
+                    mode=self.mode_var.get(),
+                )
+
+            self.state_store.save(self.engine)
+
+            self.current_pair = None
+
+            self.refresh()
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Could not open Goodreads workbook",
+                (
+                    f"{exc}\n\n"
+                    "If this is a Goodreads export, make "
+                    "sure the workbook contains a 'Title' "
+                    "column."
+                ),
+            )
+
+    def change_mode(
+        self,
+        _event=None,
+    ):
         if not self.engine:
             return
+
         mode = self.mode_var.get()
+
         if mode not in PRESETS:
             return
+
         self.engine.mode = mode
-        self.engine.target, self.engine.top_focus = PRESETS[mode]
+
+        (
+            self.engine.target,
+            self.engine.top_focus,
+        ) = PRESETS[mode]
+
         self.save_state()
+
         self.current_pair = None
+
         self.refresh()
 
     def refresh(self):
         if not self.engine:
             return
+
         self.engine.tick_skips()
-        self.progress['value'] = self.engine.progress()
+
+        self.progress["value"] = self.engine.progress()
+
         self.current_pair = self.engine.choose_pair()
+
         self.show_current_pair()
+
         metrics = self.engine.confidence_metrics()
-        self.info_var.set(f"{len(self.engine.books)} active books  •  {len(self.engine.comparisons)} decisions  •  Top-10 {metrics['top10_confidence'] * 100:.0f}%  •  Top-25 {metrics['top25_confidence'] * 100:.0f}%  •  stability {metrics['top25_stability'] * 100:.0f}%  •  {metrics['unresolved_boundary']} boundary unresolved")
+
+        self.info_var.set(
+            f"{len(self.engine.books)} active books"
+            f"  •  {len(self.engine.comparisons)} decisions"
+            f"  •  Top-10 "
+            f"{metrics['top10_confidence'] * 100:.0f}%"
+            f"  •  Top-25 "
+            f"{metrics['top25_confidence'] * 100:.0f}%"
+            f"  •  stability "
+            f"{metrics['top25_stability'] * 100:.0f}%"
+            f"  •  "
+            f"{metrics['unresolved_boundary']} "
+            f"boundary unresolved"
+        )
 
     def show_current_pair(self):
         if not self.current_pair:
-            self.left_button.configure(state='disabled')
-            self.tie_button.configure(state='disabled')
-            self.right_button.configure(state='disabled')
-            self.left_title.set('🏆 Ranking ready')
-            self.right_title.set('Continue whenever you want')
-            self.left_status.set('ANALYSIS')
-            self.right_status.set('HUMAN CHOICE REQUIRED')
-            self.set_description(self.left_description, 'The adaptive engine does not invent preferences. Export the ranking or continue refining it.')
-            self.set_description(self.right_description, 'Use the lifecycle buttons if a book becomes Read, Currently Reading or Ignore.')
-            return
-        self.left_button.configure(state='normal')
-        self.tie_button.configure(state='normal')
-        self.right_button.configure(state='normal')
-        left = self.engine.library[self.current_pair[0]]
-        right = self.engine.library[self.current_pair[1]]
-        self.display_book(left, 'left')
-        self.display_book(right, 'right')
+            self.left_button.configure(state="disabled")
 
-    def search_duckduckgo(self, title, author='', isbn='', doi=''):
-        title = str(title or '').strip()
-        author = str(author or '').strip()
-        isbn = str(isbn or '').strip()
-        doi = str(doi or '').strip()
+            self.tie_button.configure(state="disabled")
+
+            self.right_button.configure(state="disabled")
+
+            self.left_title.set("🏆 Ranking ready")
+
+            self.right_title.set("Continue whenever you want")
+
+            self.left_status.set("ANALYSIS")
+
+            self.right_status.set("HUMAN CHOICE REQUIRED")
+
+            self.set_description(
+                self.left_description,
+                (
+                    "The adaptive engine does not invent "
+                    "preferences. Export the ranking or "
+                    "continue refining it."
+                ),
+            )
+
+            self.set_description(
+                self.right_description,
+                (
+                    "Use the lifecycle buttons if a book "
+                    "becomes Read, Currently Reading or Ignore."
+                ),
+            )
+
+            return
+
+        self.left_button.configure(state="normal")
+
+        self.tie_button.configure(state="normal")
+
+        self.right_button.configure(state="normal")
+
+        left = self.engine.library[self.current_pair[0]]
+
+        right = self.engine.library[self.current_pair[1]]
+
+        self.display_book(
+            left,
+            "left",
+        )
+
+        self.display_book(
+            right,
+            "right",
+        )
+
+    def search_duckduckgo(
+        self,
+        title,
+        author="",
+        isbn="",
+        doi="",
+    ):
+        title = str(title or "").strip()
+        author = str(author or "").strip()
+        isbn = str(isbn or "").strip()
+        doi = str(doi or "").strip()
+
         identifier = isbn or doi
-        parts = [value for value in (title, author, identifier) if value]
-        query = ' '.join(parts)
+
+        parts = [
+            value
+            for value in (
+                title,
+                author,
+                identifier,
+            )
+            if value
+        ]
+
+        query = " ".join(parts)
+
         if query:
-            webbrowser.open_new_tab('https://duckduckgo.com/?q=' + urllib.parse.quote_plus(query))
+            webbrowser.open_new_tab(
+                "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(query)
+            )
 
     def search_current_book(self, side):
+
         if not self.engine or not self.current_pair:
             return
-        if side == 'left':
+
+        if side == "left":
             book_id = self.current_pair[0]
         else:
             book_id = self.current_pair[1]
+
         book = self.engine.library.get(book_id)
+
         if not book:
             return
-        fields = getattr(book, 'goodreads_fields', {}) or {}
-        isbn = fields.get('isbn') or book.isbn
-        doi = fields.get('doi', '')
-        self.search_duckduckgo(book.title, book.author, isbn, doi)
+
+        fields = (
+            getattr(
+                book,
+                "goodreads_fields",
+                {},
+            )
+            or {}
+        )
+
+        isbn = fields.get("isbn") or book.isbn
+
+        doi = fields.get("doi", "")
+
+        self.search_duckduckgo(
+            book.title,
+            book.author,
+            isbn,
+            doi,
+        )
 
     def edit_current_book(self, side):
         if not self.engine or not self.current_pair:
             return
-        book_id = self.current_pair[0] if side == 'left' else self.current_pair[1]
+
+        book_id = (
+            self.current_pair[0] if side == "left" else self.current_pair[1]
+        )
+
         book = self.engine.library.get(book_id)
+
         if not book:
             return
-        fields = dict(getattr(book, 'goodreads_fields', {}) or {})
+
+        fields = dict(getattr(book, "goodreads_fields", {}) or {})
+
         editor = tk.Toplevel(self.root)
-        editor.title(f'Edit Book — {book.title}')
-        editor.geometry('700x750')
-        editor.configure(bg=self.colors['bg'])
+        editor.title(f"Edit Book — {book.title}")
+        editor.geometry("700x750")
+        editor.configure(bg=self.colors["bg"])
         editor.transient(self.root)
         editor.grab_set()
-        outer = tk.Frame(editor, bg=self.colors['bg'], padx=14, pady=14)
-        outer.pack(fill='both', expand=True)
-        canvas = tk.Canvas(outer, bg=self.colors['bg'], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
-        form = tk.Frame(canvas, bg=self.colors['bg'])
-        canvas_window = canvas.create_window((0, 0), window=form, anchor='nw')
+
+        outer = tk.Frame(
+            editor,
+            bg=self.colors["bg"],
+            padx=14,
+            pady=14,
+        )
+        outer.pack(
+            fill="both",
+            expand=True,
+        )
+
+        canvas = tk.Canvas(
+            outer,
+            bg=self.colors["bg"],
+            highlightthickness=0,
+        )
+
+        scrollbar = ttk.Scrollbar(
+            outer,
+            orient="vertical",
+            command=canvas.yview,
+        )
+
+        form = tk.Frame(
+            canvas,
+            bg=self.colors["bg"],
+        )
+
+        canvas_window = canvas.create_window(
+            (0, 0),
+            window=form,
+            anchor="nw",
+        )
 
         def configure_form(_event=None):
-            canvas.configure(scrollregion=canvas.bbox('all'))
-        form.bind('<Configure>', configure_form)
-        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(canvas_window, width=event.width))
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        form.bind(
+            "<Configure>",
+            configure_form,
+        )
+
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(
+                canvas_window,
+                width=event.width,
+            ),
+        )
+
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
-        fields_to_edit = [('Pages', 'number of pages'), ('Title', 'title'), ('Author l-f', 'author l-f'), ('cat', 'cat'), ('Private Notes', 'private notes'), ('Exclusive Shelf', 'exclusive shelf'), ('Date Read', 'date read'), ('My Rating', 'my rating'), ('Read Count', 'read count'), ('Year Published', 'year published'), ('Original Publication Year', 'original publication year'), ('Publisher', 'publisher'), ('ISBN', 'isbn'), ('DOI', 'doi'), ('Series', 'series'), ('Series-#', 'series-#'), ('Description', 'description')]
+
+        canvas.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+
+        scrollbar.pack(
+            side="right",
+            fill="y",
+        )
+
+        fields_to_edit = [
+            ("Pages", "number of pages"),
+            ("Title", "title"),
+            ("Author l-f", "author l-f"),
+            ("cat", "cat"),
+            ("Private Notes", "private notes"),
+            ("Exclusive Shelf", "exclusive shelf"),
+            ("Date Read", "date read"),
+            ("My Rating", "my rating"),
+            ("Read Count", "read count"),
+            ("Year Published", "year published"),
+            (
+                "Original Publication Year",
+                "original publication year",
+            ),
+            ("Publisher", "publisher"),
+            ("ISBN", "isbn"),
+            ("DOI", "doi"),
+            ("Series", "series"),
+            ("Series-#", "series-#"),
+            ("Description", "description"),
+        ]
+
         variables = {}
         widgets = {}
+
         for row_index, (label, key) in enumerate(fields_to_edit):
-            value = fields.get(key, '')
+
+            value = fields.get(key, "")
+
             if not value:
-                fallback = {'number of pages': book.pages, 'title': book.title, 'author l-f': book.author, 'exclusive shelf': book.shelf, 'my rating': book.my_rating, 'year published': book.year, 'publisher': book.publisher, 'isbn': book.isbn, 'book id - goodreads': book.goodreads_id, 'series': series_name(book), 'series-#': '' if series_number(book) is None else str(series_number(book)), 'description': book.description}
-                value = fallback.get(key, '')
-            tk.Label(form, text=label, bg=self.colors['bg'], fg=self.colors['text'], font=(self.font, 9, 'bold'), anchor='w').grid(row=row_index, column=0, sticky='nw', padx=(0, 12), pady=6)
-            if key == 'description':
-                widget = tk.Text(form, height=8, wrap='word', bg=self.colors['card'], fg=self.colors['text'], insertbackground=self.colors['text'], relief='flat', bd=1, font=(self.font, 9))
-                widget.insert('1.0', value)
+                fallback = {
+                    "number of pages": book.pages,
+                    "title": book.title,
+                    "author l-f": book.author,
+                    "exclusive shelf": book.shelf,
+                    "my rating": book.my_rating,
+                    "year published": book.year,
+                    "publisher": book.publisher,
+                    "isbn": book.isbn,
+                    "book id - goodreads": book.goodreads_id,
+                    "series": series_name(book),
+                    "series-#": (
+                        ""
+                        if series_number(book) is None
+                        else str(series_number(book))
+                    ),
+                    "description": book.description,
+                }
+
+                value = fallback.get(key, "")
+
+            tk.Label(
+                form,
+                text=label,
+                bg=self.colors["bg"],
+                fg=self.colors["text"],
+                font=(
+                    self.font,
+                    9,
+                    "bold",
+                ),
+                anchor="w",
+            ).grid(
+                row=row_index,
+                column=0,
+                sticky="nw",
+                padx=(0, 12),
+                pady=6,
+            )
+
+            if key == "description":
+                widget = tk.Text(
+                    form,
+                    height=8,
+                    wrap="word",
+                    bg=self.colors["card"],
+                    fg=self.colors["text"],
+                    insertbackground=self.colors["text"],
+                    relief="flat",
+                    bd=1,
+                    font=(
+                        self.font,
+                        9,
+                    ),
+                )
+
+                widget.insert(
+                    "1.0",
+                    value,
+                )
+
             else:
                 variable = tk.StringVar(value=value)
+
                 variables[key] = variable
-                widget = tk.Entry(form, textvariable=variable, bg=self.colors['card'], fg=self.colors['text'], insertbackground=self.colors['text'], relief='flat', bd=1, font=(self.font, 9))
-            if key == 'book id - goodreads':
-                widget.configure(state='disabled')
-            widget.grid(row=row_index, column=1, sticky='ew', pady=6)
+
+                widget = tk.Entry(
+                    form,
+                    textvariable=variable,
+                    bg=self.colors["card"],
+                    fg=self.colors["text"],
+                    insertbackground=self.colors["text"],
+                    relief="flat",
+                    bd=1,
+                    font=(
+                        self.font,
+                        9,
+                    ),
+                )
+
+            if key == "book id - goodreads":
+                widget.configure(state="disabled")
+
+            widget.grid(
+                row=row_index,
+                column=1,
+                sticky="ew",
+                pady=6,
+            )
+
             widgets[key] = widget
-        form.grid_columnconfigure(1, weight=1)
-        buttons = tk.Frame(editor, bg=self.colors['bg'])
-        buttons.pack(fill='x', padx=14, pady=(0, 14))
+
+        form.grid_columnconfigure(
+            1,
+            weight=1,
+        )
+
+        buttons = tk.Frame(
+            editor,
+            bg=self.colors["bg"],
+        )
+
+        buttons.pack(
+            fill="x",
+            padx=14,
+            pady=(0, 14),
+        )
 
         def save_changes():
+
             for key, variable in variables.items():
                 fields[key] = normalize(variable.get())
-            description_widget = widgets.get('description')
+
+            description_widget = widgets.get("description")
+
             if description_widget:
-                fields['description'] = normalize(description_widget.get('1.0', 'end-1c'))
+                fields["description"] = normalize(
+                    description_widget.get(
+                        "1.0",
+                        "end-1c",
+                    )
+                )
+
             book.goodreads_fields = fields
-            book.title = fields.get('title', book.title)
-            book.author = fields.get('author l-f', book.author)
-            book.pages = fields.get('number of pages', book.pages)
-            book.my_rating = fields.get('my rating', book.my_rating)
-            book.shelf = fields.get('exclusive shelf', book.shelf)
-            book.description = fields.get('description', book.description)
-            book.isbn = clean_isbn(fields.get('isbn', book.isbn))
-            book.year = fields.get('year published', book.year)
-            book.publisher = fields.get('publisher', book.publisher)
-            book.goodreads_id = fields.get('book id - goodreads', book.goodreads_id)
-            shelf = normalize(fields.get('exclusive shelf', book.status)).lower()
-            if shelf in {'currently-reading', 'currently reading'}:
-                shelf = 'currently-reading'
-            elif shelf == 'read':
-                shelf = 'read'
-            elif shelf == 'to-read':
-                shelf = 'to-read'
+
+            book.title = fields.get(
+                "title",
+                book.title,
+            )
+
+            book.author = fields.get(
+                "author l-f",
+                book.author,
+            )
+
+            book.pages = fields.get(
+                "number of pages",
+                book.pages,
+            )
+
+            book.my_rating = fields.get(
+                "my rating",
+                book.my_rating,
+            )
+
+            book.shelf = fields.get(
+                "exclusive shelf",
+                book.shelf,
+            )
+
+            book.description = fields.get(
+                "description",
+                book.description,
+            )
+
+            book.isbn = clean_isbn(
+                fields.get(
+                    "isbn",
+                    book.isbn,
+                )
+            )
+
+            book.year = fields.get(
+                "year published",
+                book.year,
+            )
+
+            book.publisher = fields.get(
+                "publisher",
+                book.publisher,
+            )
+
+            book.goodreads_id = fields.get(
+                "book id - goodreads",
+                book.goodreads_id,
+            )
+
+            shelf = normalize(
+                fields.get(
+                    "exclusive shelf",
+                    book.status,
+                )
+            ).lower()
+
+            if shelf in {
+                "currently-reading",
+                "currently reading",
+            }:
+                shelf = "currently-reading"
+            elif shelf == "read":
+                shelf = "read"
+            elif shelf == "to-read":
+                shelf = "to-read"
+
             if shelf in self.engine.ALL_STATUSES:
                 book.shelf = shelf
-                if book.status != 'ignore':
+
+                if book.status != "ignore":
                     book.status = shelf
+
                 self.engine.statuses[book.id] = book.status
+
             self.engine._sync_books()
             self.engine._replay()
+
             self.save_state()
+
             editor.destroy()
-            self.display_book(book, side)
-            self.info_var.set(f'Saved changes to: {book.title}')
-        ttk.Button(buttons, text='Cancel', command=editor.destroy).pack(side='right', padx=4)
-        ttk.Button(buttons, text='Save Changes', style='Accent.TButton', command=save_changes).pack(side='right', padx=4)
-        editor.bind('<Control-s>', lambda event: save_changes())
+
+            self.display_book(
+                book,
+                side,
+            )
+
+            self.info_var.set(f"Saved changes to: {book.title}")
+
+        ttk.Button(
+            buttons,
+            text="Cancel",
+            command=editor.destroy,
+        ).pack(
+            side="right",
+            padx=4,
+        )
+
+        ttk.Button(
+            buttons,
+            text="Save Changes",
+            style="Accent.TButton",
+            command=save_changes,
+        ).pack(
+            side="right",
+            padx=4,
+        )
+
+        editor.bind(
+            "<Control-s>",
+            lambda event: save_changes(),
+        )
+
         if fields_to_edit:
             first_key = fields_to_edit[0][1]
             first_widget = widgets.get(first_key)
+
             if first_widget:
                 first_widget.focus_set()
 
-    def display_book(self, book, side):
+    def display_book(
+        self,
+        book,
+        side,
+    ):
         rating = self.engine.ratings[book.id]
-        statistics = self.engine.statistics()
-        item = next((item for item in statistics if item['book'].id == book.id))
-        status_labels = {'currently-reading': '📖 CURRENTLY READING', 'to-read': '📚 TO-READ', 'read': '✓ READ', 'ignore': '🚫 IGNORED'}
-        getattr(self, f'{side}_title').set(book.title)
-        getattr(self, f'{side}_author').set(book.author or 'Unknown author')
-        getattr(self, f'{side}_status').set(status_labels.get(book.status, book.status.upper()))
-        meta = [f"Model #{item['rank']}", f"Likely {item['rank_low']}–{item['rank_high']}", f"Top-25 {item['top25_probability'] * 100:.0f}%", f'Rating {rating.rating:.0f} ±{rating.rd:.0f}', f'{rating.comparisons} decisions']
-        if book.pages:
-            meta.insert(0, f'{book.pages} pages')
-        getattr(self, f'{side}_meta').set('  •  '.join(meta))
-        self.set_card_details(getattr(self, f'{side}_details'), book)
 
-    def format_book_details(self, book):
-        fields = dict(getattr(book, 'goodreads_fields', {}) or {})
-        ordered = [('Pages', 'number of pages'), ('Title', 'title'), ('Author l-f', 'author l-f'), ('cat', 'cat'), ('Private Notes', 'private notes'), ('Exclusive Shelf', 'exclusive shelf'), ('Date Read', 'date read'), ('My Rating', 'my rating'), ('Read Count', 'read count'), ('Year Published', 'year published'), ('Original Publication Year', 'original publication year'), ('Publisher', 'publisher'), ('ISBN', 'isbn'), ('DOI', 'doi'), ('Book Id - Goodreads', 'book id - goodreads'), ('Description', 'description')]
+        statistics = self.engine.statistics()
+
+        item = next(item for item in statistics if item["book"].id == book.id)
+
+        status_labels = {
+            "currently-reading": "📖 CURRENTLY READING",
+            "to-read": "📚 TO-READ",
+            "read": "✓ READ",
+            "ignore": "🚫 IGNORED",
+        }
+
+        getattr(
+            self,
+            f"{side}_title",
+        ).set(book.title)
+
+        getattr(
+            self,
+            f"{side}_author",
+        ).set(book.author or "Unknown author")
+
+        getattr(
+            self,
+            f"{side}_status",
+        ).set(
+            status_labels.get(
+                book.status,
+                book.status.upper(),
+            )
+        )
+
+        meta = [
+            f"Model #{item['rank']}",
+            (f"Likely " f"{item['rank_low']}" f"–" f"{item['rank_high']}"),
+            (f"Top-25 " f"{item['top25_probability'] * 100:.0f}%"),
+            (f"Rating " f"{rating.rating:.0f}" f" ±{rating.rd:.0f}"),
+            (f"{rating.comparisons}" f" decisions"),
+        ]
+
+        if book.pages:
+            meta.insert(
+                0,
+                f"{book.pages} pages",
+            )
+
+        getattr(
+            self,
+            f"{side}_meta",
+        ).set("  •  ".join(meta))
+
+        self.set_card_details(
+            getattr(
+                self,
+                f"{side}_details",
+            ),
+            book,
+        )
+
+    def format_book_details(
+        self,
+        book,
+    ):
+
+        fields = dict(
+            getattr(
+                book,
+                "goodreads_fields",
+                {},
+            )
+            or {}
+        )
+
+        ordered = [
+            ("Pages", "number of pages"),
+            ("Title", "title"),
+            ("Author l-f", "author l-f"),
+            ("cat", "cat"),
+            ("Private Notes", "private notes"),
+            ("Exclusive Shelf", "exclusive shelf"),
+            ("Date Read", "date read"),
+            ("My Rating", "my rating"),
+            ("Read Count", "read count"),
+            ("Year Published", "year published"),
+            (
+                "Original Publication Year",
+                "original publication year",
+            ),
+            ("Publisher", "publisher"),
+            ("ISBN", "isbn"),
+            ("DOI", "doi"),
+            ("Book Id - Goodreads", "book id - goodreads"),
+            ("Description", "description"),
+        ]
+
         lines = []
         used = set()
+
         for label, key in ordered:
-            value = fields.get(key, '')
+            value = fields.get(key, "")
+
             if not value:
-                fallback = {'number of pages': book.pages, 'title': book.title, 'author l-f': book.author, 'exclusive shelf': book.shelf, 'my rating': book.my_rating, 'year published': book.year, 'publisher': book.publisher, 'isbn': book.isbn, 'book id - goodreads': book.goodreads_id, 'series': series_name(book), 'series-#': '' if series_number(book) is None else str(series_number(book)), 'description': book.description}
-                value = fallback.get(key, '')
-            if key == 'description' and value:
+                fallback = {
+                    "number of pages": book.pages,
+                    "title": book.title,
+                    "author l-f": book.author,
+                    "exclusive shelf": book.shelf,
+                    "my rating": book.my_rating,
+                    "year published": book.year,
+                    "publisher": book.publisher,
+                    "isbn": book.isbn,
+                    "book id - goodreads": book.goodreads_id,
+                    "series": series_name(book),
+                    "series-#": (
+                        ""
+                        if series_number(book) is None
+                        else str(series_number(book))
+                    ),
+                    "description": book.description,
+                }
+                value = fallback.get(key, "")
+
+            if key == "description" and value:
+
                 pass
+
             lines.append(f"{label}: {value or '—'}")
             used.add(key)
-        extras = [(key, value) for key, value in fields.items() if key not in used]
+
+        extras = [
+            (key, value) for key, value in fields.items() if key not in used
+        ]
+
         if extras:
-            lines.append('')
-            lines.append('Other Goodreads Columns:')
+            lines.append("")
+            lines.append("Other Goodreads Columns:")
             for key, value in extras:
                 label = key.title()
                 lines.append(f"{label}: {value or '—'}")
-        return '\n'.join(lines)
 
-    def set_card_details(self, widget, book):
-        widget.configure(state='normal')
-        widget.delete('1.0', 'end')
-        widget.insert('1.0', self.format_book_details(book))
-        widget.configure(state='disabled')
+        return "\n".join(lines)
+
+    def set_card_details(
+        self,
+        widget,
+        book,
+    ):
+        widget.configure(state="normal")
+
+        widget.delete(
+            "1.0",
+            "end",
+        )
+
+        widget.insert(
+            "1.0",
+            self.format_book_details(book),
+        )
+
+        widget.configure(state="disabled")
         widget.yview_moveto(0.0)
 
-    def set_description(self, widget, text):
-        widget.configure(state='normal')
-        widget.delete('1.0', 'end')
-        widget.insert('1.0', text)
-        widget.configure(state='disabled')
+    def set_description(
+        self,
+        widget,
+        text,
+    ):
+        widget.configure(state="normal")
+        widget.delete(
+            "1.0",
+            "end",
+        )
+        widget.insert(
+            "1.0",
+            text,
+        )
+        widget.configure(state="disabled")
 
-    def choose(self, result):
+    def choose(
+        self,
+        result,
+    ):
         if not self.engine or not self.current_pair:
             return
+
         left, right = self.current_pair
+
         try:
             raw_bonus = self.winner_bonus_var.get().strip()
+
             try:
                 winner_bonus = float(raw_bonus if raw_bonus else 0)
             except ValueError:
-                messagebox.showerror('Invalid bonus', 'Extra points must be a non-negative number.')
+                messagebox.showerror(
+                    "Invalid bonus",
+                    "Extra points must be a non-negative number.",
+                )
                 return
+
             if not math.isfinite(winner_bonus) or winner_bonus < 0:
-                messagebox.showerror('Invalid bonus', 'Extra points must be a finite, non-negative number.')
+                messagebox.showerror(
+                    "Invalid bonus",
+                    "Extra points must be a finite, non-negative number.",
+                )
                 return
-            if result == 'tie':
+
+            if result == "tie":
                 winner_bonus = 0.0
-            self.engine.apply_match(left, right, result, winner_bonus=winner_bonus)
-            self.winner_bonus_var.set('0')
+
+            self.engine.apply_match(
+                left,
+                right,
+                result,
+                winner_bonus=winner_bonus,
+            )
+
+            self.winner_bonus_var.set("0")
+
             self.save_state()
+
             self.current_pair = None
+
             self.refresh()
+
         except Exception as exc:
-            messagebox.showerror('Could not record choice', str(exc))
+            messagebox.showerror(
+                "Could not record choice",
+                str(exc),
+            )
 
     def skip(self):
         if not self.engine or not self.current_pair:
             return
+
         self.engine.skip_pair(*self.current_pair)
+
         self.current_pair = None
+
         self.refresh()
 
-    def set_lifecycle(self, side, status):
+    def set_lifecycle(
+        self,
+        side,
+        status,
+    ):
         if not self.engine or not self.current_pair:
             return
-        book_id = self.current_pair[0] if side == 'left' else self.current_pair[1]
+
+        book_id = (
+            self.current_pair[0] if side == "left" else self.current_pair[1]
+        )
+
         book = self.engine.library[book_id]
+
         old_status = book.status
         old_shelf = book.shelf
-        old_exclusive_shelf = book.goodreads_fields.get('exclusive shelf', '') if isinstance(book.goodreads_fields, dict) else ''
+        old_exclusive_shelf = (
+            book.goodreads_fields.get(
+                "exclusive shelf",
+                "",
+            )
+            if isinstance(book.goodreads_fields, dict)
+            else ""
+        )
+
         try:
-            self.engine.set_lifecycle(book_id, status)
+
+            self.engine.set_lifecycle(
+                book_id,
+                status,
+            )
+
             self.save_source_workbook()
+
             self.save_state()
+
         except Exception as exc:
+
             book.status = old_status
             book.shelf = old_shelf
+
             if not isinstance(book.goodreads_fields, dict):
                 book.goodreads_fields = {}
-            book.goodreads_fields['exclusive shelf'] = old_exclusive_shelf
+
+            book.goodreads_fields["exclusive shelf"] = old_exclusive_shelf
+
             self.engine.statuses[book_id] = old_status
+
             self.engine._sync_books()
             self.engine._replay()
-            messagebox.showerror('Could not update Goodreads shelf', str(exc))
-            return
-        self.current_pair = None
-        self.refresh()
-        self.info_var.set(f"{book.title}  →  {status.replace('-', ' ').title()}")
 
-    def lifecycle_menu(self, event, side):
+            messagebox.showerror(
+                "Could not update Goodreads shelf",
+                str(exc),
+            )
+            return
+
+        self.current_pair = None
+
+        self.refresh()
+
+        self.info_var.set(
+            f"{book.title}  →  " f"{status.replace('-', ' ').title()}"
+        )
+
+    def lifecycle_menu(
+        self,
+        event,
+        side,
+    ):
         if not self.engine or not self.current_pair:
             return
-        menu = tk.Menu(self.root, tearoff=False, bg=self.colors['panel'], fg=self.colors['text'], activebackground=self.colors['purple'], activeforeground='#FFFFFF')
-        menu.add_command(label='📖 Currently Reading', command=lambda: self.set_lifecycle(side, 'currently-reading'))
-        menu.add_command(label='✓ Read', command=lambda: self.set_lifecycle(side, 'read'))
-        menu.add_command(label='🚫 Ignore', command=lambda: self.set_lifecycle(side, 'ignore'))
-        menu.add_command(label='↺ To-read', command=lambda: self.set_lifecycle(side, 'to-read'))
+
+        menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            activebackground=self.colors["purple"],
+            activeforeground="#FFFFFF",
+        )
+
+        menu.add_command(
+            label="📖 Currently Reading",
+            command=lambda: self.set_lifecycle(
+                side,
+                "currently-reading",
+            ),
+        )
+
+        menu.add_command(
+            label="✓ Read",
+            command=lambda: self.set_lifecycle(
+                side,
+                "read",
+            ),
+        )
+
+        menu.add_command(
+            label="🚫 Ignore",
+            command=lambda: self.set_lifecycle(
+                side,
+                "ignore",
+            ),
+        )
+
+        menu.add_command(
+            label="↺ To-read",
+            command=lambda: self.set_lifecycle(
+                side,
+                "to-read",
+            ),
+        )
+
         try:
-            menu.tk_popup(event.x_root, event.y_root)
+            menu.tk_popup(
+                event.x_root,
+                event.y_root,
+            )
         finally:
             menu.grab_release()
 
     def undo(self):
         if not self.engine:
             return
+
         if self.engine.undo():
             self.save_state()
+
             self.current_pair = None
+
             self.refresh()
 
     def save_source_workbook(self):
+
         if not self.engine or not self.source_file:
             return
+
         source = Path(self.source_file)
-        keep_vba = source.suffix.lower() == '.xlsm'
-        workbook = load_workbook(source, keep_vba=keep_vba)
-        temporary = source.with_name(source.stem + '.lifecycle.tmp' + source.suffix)
+
+        keep_vba = source.suffix.lower() == ".xlsm"
+
+        workbook = load_workbook(
+            source,
+            keep_vba=keep_vba,
+        )
+
+        temporary = source.with_name(
+            source.stem + ".lifecycle.tmp" + source.suffix
+        )
+
         try:
             source_sheet = workbook.active
-            update_goodreads_source_sheet(source_sheet, self.engine)
+
+            update_goodreads_source_sheet(
+                source_sheet,
+                self.engine,
+            )
+
             workbook.save(temporary)
+
         finally:
             workbook.close()
-        os.replace(temporary, source)
+
+        os.replace(
+            temporary,
+            source,
+        )
 
     def save_state(self):
         if self.engine and self.state_store:
             try:
                 self.state_store.save(self.engine)
             except Exception as exc:
-                print('Warning: could not save state:', exc)
+                print(
+                    "Warning: could not save state:",
+                    exc,
+                )
 
     def show_ranking(self):
         if not self.engine:
-            messagebox.showinfo('No ranking', 'Open a Goodreads workbook first.')
+            messagebox.showinfo(
+                "No ranking",
+                "Open a Goodreads workbook first.",
+            )
             return
+
         window = tk.Toplevel(self.root)
-        window.title('Ranking • uncertainty aware')
-        window.geometry('1450x760')
-        window.configure(bg=self.colors['bg'])
+
+        window.title("Ranking • uncertainty aware")
+
+        window.geometry("1450x760")
+
+        window.configure(bg=self.colors["bg"])
+
         metrics = self.engine.confidence_metrics()
-        tk.Label(window, text='🏆  CURRENT READING + TOP-25', bg=self.colors['bg'], fg=self.colors['text'], font=(self.font, 18, 'bold')).pack(anchor='w', padx=14, pady=(12, 2))
-        tk.Label(window, text=f"Top-10 confidence {metrics['top10_confidence'] * 100:.0f}%  •  Top-25 confidence {metrics['top25_confidence'] * 100:.0f}%  •  stability {metrics['top25_stability'] * 100:.0f}%  •  {metrics['unresolved_boundary']} unresolved boundary", bg=self.colors['bg'], fg=self.colors['muted'], font=(self.font, 9)).pack(anchor='w', padx=14, pady=(0, 8))
-        columns = ('priority', 'rank', 'title', 'author', 'status', 'rating', 'rd', 'interval', 'top10', 'top25', 'decisions')
-        tree = ttk.Treeview(window, columns=columns, show='headings')
-        headings = {'priority': 'Priority', 'rank': 'Rank', 'title': 'Title', 'author': 'Author', 'status': 'Status', 'rating': 'Rating', 'rd': 'RD', 'interval': 'Likely rank', 'top10': 'Top 10 %', 'top25': 'Top 25 %', 'decisions': 'Decisions'}
-        widths = {'priority': 110, 'rank': 55, 'title': 340, 'author': 200, 'status': 170, 'rating': 75, 'rd': 65, 'interval': 90, 'top10': 85, 'top25': 85, 'decisions': 85}
+
+        tk.Label(
+            window,
+            text=("🏆  CURRENT READING + TOP-25"),
+            bg=self.colors["bg"],
+            fg=self.colors["text"],
+            font=(
+                self.font,
+                18,
+                "bold",
+            ),
+        ).pack(
+            anchor="w",
+            padx=14,
+            pady=(12, 2),
+        )
+
+        tk.Label(
+            window,
+            text=(
+                f"Top-10 confidence "
+                f"{metrics['top10_confidence'] * 100:.0f}%"
+                f"  •  "
+                f"Top-25 confidence "
+                f"{metrics['top25_confidence'] * 100:.0f}%"
+                f"  •  "
+                f"stability "
+                f"{metrics['top25_stability'] * 100:.0f}%"
+                f"  •  "
+                f"{metrics['unresolved_boundary']}"
+                f" unresolved boundary"
+            ),
+            bg=self.colors["bg"],
+            fg=self.colors["muted"],
+            font=(
+                self.font,
+                9,
+            ),
+        ).pack(
+            anchor="w",
+            padx=14,
+            pady=(0, 8),
+        )
+
+        columns = (
+            "priority",
+            "rank",
+            "title",
+            "author",
+            "status",
+            "rating",
+            "rd",
+            "interval",
+            "top10",
+            "top25",
+            "decisions",
+        )
+
+        tree = ttk.Treeview(
+            window,
+            columns=columns,
+            show="headings",
+        )
+
+        headings = {
+            "priority": "Priority",
+            "rank": "Rank",
+            "title": "Title",
+            "author": "Author",
+            "status": "Status",
+            "rating": "Rating",
+            "rd": "RD",
+            "interval": "Likely rank",
+            "top10": "Top 10 %",
+            "top25": "Top 25 %",
+            "decisions": "Decisions",
+        }
+
+        widths = {
+            "priority": 110,
+            "rank": 55,
+            "title": 340,
+            "author": 200,
+            "status": 170,
+            "rating": 75,
+            "rd": 65,
+            "interval": 90,
+            "top10": 85,
+            "top25": 85,
+            "decisions": 85,
+        }
+
         for column in columns:
-            tree.heading(column, text=headings[column])
-            tree.column(column, width=widths[column], anchor='w' if column in {'title', 'author', 'status'} else 'center')
-        scrollbar = ttk.Scrollbar(window, orient='vertical', command=tree.yview)
+            tree.heading(
+                column,
+                text=headings[column],
+            )
+
+            tree.column(
+                column,
+                width=widths[column],
+                anchor=(
+                    "w"
+                    if column
+                    in {
+                        "title",
+                        "author",
+                        "status",
+                    }
+                    else "center"
+                ),
+            )
+
+        scrollbar = ttk.Scrollbar(
+            window,
+            orient="vertical",
+            command=tree.yview,
+        )
+
         tree.configure(yscrollcommand=scrollbar.set)
-        tree.pack(side='left', fill='both', expand=True, padx=(14, 0), pady=(0, 14))
-        scrollbar.pack(side='right', fill='y', padx=(0, 14), pady=(0, 14))
+
+        tree.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(14, 0),
+            pady=(0, 14),
+        )
+
+        scrollbar.pack(
+            side="right",
+            fill="y",
+            padx=(0, 14),
+            pady=(0, 14),
+        )
+
         statistics = self.engine.statistics()
-        current = [item for item in statistics if item['book'].status == 'currently-reading']
-        rest = [item for item in statistics if item['book'].status != 'currently-reading']
+
+        current = [
+            item
+            for item in statistics
+            if item["book"].status == "currently-reading"
+        ]
+
+        rest = [
+            item
+            for item in statistics
+            if item["book"].status != "currently-reading"
+        ]
+
         for item in current + rest:
-            book = item['book']
-            rating = item['rating']
-            if book.status == 'currently-reading':
-                priority = '📖 NOW'
-            elif item['rank'] <= TOP_K:
-                priority = '🏆 TOP 25'
+            book = item["book"]
+            rating = item["rating"]
+
+            if book.status == "currently-reading":
+                priority = "📖 NOW"
+
+            elif item["rank"] <= TOP_K:
+                priority = "🏆 TOP 25"
+
             else:
-                priority = '📚 QUEUE'
-            tree.insert('', 'end', values=(priority, item['rank'], book.title, book.author, book.status, f'{rating.rating:.0f}', f'±{rating.rd:.0f}', f"{item['rank_low']}–{item['rank_high']}", f"{item['top10_probability'] * 100:.0f}%", f"{item['top25_probability'] * 100:.0f}%", rating.comparisons))
+                priority = "📚 QUEUE"
+
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    priority,
+                    item["rank"],
+                    book.title,
+                    book.author,
+                    book.status,
+                    f"{rating.rating:.0f}",
+                    f"±{rating.rd:.0f}",
+                    (f"{item['rank_low']}" f"–" f"{item['rank_high']}"),
+                    (f"{item['top10_probability'] * 100:.0f}%"),
+                    (f"{item['top25_probability'] * 100:.0f}%"),
+                    rating.comparisons,
+                ),
+            )
 
     def show_shortcuts(self):
         window = tk.Toplevel(self.root)
-        window.title('Keyboard shortcuts')
-        window.geometry('760x650')
-        window.configure(bg=self.colors['bg'])
-        tk.Label(window, text='⌨  FULL KEYBOARD REFERENCE', bg=self.colors['bg'], fg=self.colors['text'], font=(self.font, 18, 'bold')).pack(anchor='w', padx=20, pady=16)
-        shortcuts = [('1', 'Choose LEFT'), ('2', 'Choose RIGHT'), ('3 / T', 'Tie'), ('4 / S', 'Skip'), ('← / →', 'Choose left / right'), ('U', 'Undo'), ('I', 'Mark LEFT Ignore'), ('R', 'Mark LEFT Read'), ('C', 'Mark LEFT Currently Reading'), ('Shift+I', 'Mark RIGHT Ignore'), ('Shift+R', 'Mark RIGHT Read'), ('Shift+C', 'Mark RIGHT Currently Reading'), ('Ctrl+O', 'Open Goodreads Excel'), ('Ctrl+E', 'Export Ranking'), ('Click book card', 'Open lifecycle menu')]
+
+        window.title("Keyboard shortcuts")
+
+        window.geometry("760x650")
+
+        window.configure(bg=self.colors["bg"])
+
+        tk.Label(
+            window,
+            text="⌨  FULL KEYBOARD REFERENCE",
+            bg=self.colors["bg"],
+            fg=self.colors["text"],
+            font=(
+                self.font,
+                18,
+                "bold",
+            ),
+        ).pack(
+            anchor="w",
+            padx=20,
+            pady=16,
+        )
+
+        shortcuts = [
+            ("1", "Choose LEFT"),
+            ("2", "Choose RIGHT"),
+            ("3 / T", "Tie"),
+            ("4 / S", "Skip"),
+            ("← / →", "Choose left / right"),
+            ("U", "Undo"),
+            ("I", "Mark LEFT Ignore"),
+            ("R", "Mark LEFT Read"),
+            ("C", "Mark LEFT Currently Reading"),
+            ("Shift+I", "Mark RIGHT Ignore"),
+            ("Shift+R", "Mark RIGHT Read"),
+            ("Shift+C", "Mark RIGHT Currently Reading"),
+            ("Ctrl+O", "Open Goodreads Excel"),
+            ("Ctrl+E", "Export Ranking"),
+            ("Click book card", "Open lifecycle menu"),
+        ]
+
         for key, description in shortcuts:
-            row = tk.Frame(window, bg=self.colors['panel'])
-            row.pack(fill='x', padx=20, pady=2)
-            tk.Label(row, text=key, bg=self.colors['panel'], fg=self.colors['accent'], font=('Consolas', 10, 'bold'), width=20, anchor='w', padx=10, pady=6).pack(side='left')
-            tk.Label(row, text=description, bg=self.colors['panel'], fg=self.colors['text'], font=(self.font, 9), anchor='w', padx=10, pady=6).pack(side='left', fill='x', expand=True)
+            row = tk.Frame(
+                window,
+                bg=self.colors["panel"],
+            )
+
+            row.pack(
+                fill="x",
+                padx=20,
+                pady=2,
+            )
+
+            tk.Label(
+                row,
+                text=key,
+                bg=self.colors["panel"],
+                fg=self.colors["accent"],
+                font=(
+                    "Consolas",
+                    10,
+                    "bold",
+                ),
+                width=20,
+                anchor="w",
+                padx=10,
+                pady=6,
+            ).pack(side="left")
+
+            tk.Label(
+                row,
+                text=description,
+                bg=self.colors["panel"],
+                fg=self.colors["text"],
+                font=(
+                    self.font,
+                    9,
+                ),
+                anchor="w",
+                padx=10,
+                pady=6,
+            ).pack(
+                side="left",
+                fill="x",
+                expand=True,
+            )
 
     def export(self):
         if not self.engine or not self.source_file:
-            messagebox.showinfo('Nothing to export', 'Open a Goodreads workbook first.')
+            messagebox.showinfo(
+                "Nothing to export",
+                "Open a Goodreads workbook first.",
+            )
             return
+
         try:
-            output = export_results(self.source_file, self.engine)
+            output = export_results(
+                self.source_file,
+                self.engine,
+            )
+
             self.save_state()
-            if messagebox.askyesno('Export complete', f'Saved:\n\n{output}\n\nOpen it now?'):
+
+            if messagebox.askyesno(
+                "Export complete",
+                (f"Saved:\n\n" f"{output}\n\n" f"Open it now?"),
+            ):
                 self.open_external(output)
+
         except PermissionError:
-            messagebox.showerror('Export failed', 'Windows could not save the workbook. Close it in Excel and try again.')
+            messagebox.showerror(
+                "Export failed",
+                (
+                    "Windows could not save the workbook. "
+                    "Close it in Excel and try again."
+                ),
+            )
+
         except Exception as exc:
-            messagebox.showerror('Export failed', str(exc))
+            messagebox.showerror(
+                "Export failed",
+                str(exc),
+            )
 
     def overwrite_source(self):
         if not self.engine or not self.source_file:
             return
-        if not messagebox.askyesno('Overwrite Goodreads source?', 'This will replace the original Goodreads workbook.\n\nA timestamped backup will be created first.\n\nContinue?'):
-            return
-        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        backup = self.source_file.with_name(self.source_file.stem + '.backup-' + timestamp + self.source_file.suffix)
-        try:
-            shutil.copy2(self.source_file, backup)
-            export_results(self.source_file, self.engine, output=self.source_file)
-            self.save_state()
-            messagebox.showinfo('Source updated', f'The Goodreads workbook was updated.\n\nBackup:\n{backup}')
-        except PermissionError:
-            messagebox.showerror('Overwrite failed', 'Close the workbook in Excel and try again.')
-        except Exception as exc:
-            messagebox.showerror('Overwrite failed', str(exc))
 
-    def open_external(self, path):
+        if not messagebox.askyesno(
+            "Overwrite Goodreads source?",
+            (
+                "This will replace the original "
+                "Goodreads workbook.\n\n"
+                "A timestamped backup will be created first.\n\n"
+                "Continue?"
+            ),
+        ):
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        backup = self.source_file.with_name(
+            self.source_file.stem
+            + ".backup-"
+            + timestamp
+            + self.source_file.suffix
+        )
+
         try:
-            if sys.platform.startswith('win'):
+            shutil.copy2(
+                self.source_file,
+                backup,
+            )
+
+            export_results(
+                self.source_file,
+                self.engine,
+                output=self.source_file,
+            )
+
+            self.save_state()
+
+            messagebox.showinfo(
+                "Source updated",
+                (
+                    "The Goodreads workbook was updated.\n\n"
+                    f"Backup:\n{backup}"
+                ),
+            )
+
+        except PermissionError:
+            messagebox.showerror(
+                "Overwrite failed",
+                ("Close the workbook in Excel " "and try again."),
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Overwrite failed",
+                str(exc),
+            )
+
+    def open_external(
+        self,
+        path,
+    ):
+        try:
+            if sys.platform.startswith("win"):
                 os.startfile(str(path))
-            elif sys.platform == 'darwin':
-                subprocess.Popen(['open', str(path)])
+
+            elif sys.platform == "darwin":
+                subprocess.Popen(
+                    [
+                        "open",
+                        str(path),
+                    ]
+                )
+
             else:
-                subprocess.Popen(['xdg-open', str(path)])
+                subprocess.Popen(
+                    [
+                        "xdg-open",
+                        str(path),
+                    ]
+                )
+
         except Exception:
             pass
 
