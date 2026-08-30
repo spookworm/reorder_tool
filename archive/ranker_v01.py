@@ -2302,53 +2302,13 @@ class RankerApp:
 
     def format_book_details(self, book):
         fields = dict(getattr(book, 'goodreads_fields', {}) or {})
-        ordered = [
-            ('ISBN', 'isbn'),
-            ('DOI', 'doi'),
-            ('Book Id - Goodreads', 'book id - goodreads'),
-            ('Wikipedia URL', 'wikipedia url'),
-            ('Goals', 'goals'),
-            ('Exclusive Shelf', 'exclusive shelf'),
-            ('Date Read', 'date read'),
-            ('My Rating', 'my rating'),
-            ('Read Count', 'read count'),
-            ('Number of Pages', 'number of pages'),
-            ('Words', 'words'),
-            ('Title', 'title'),
-            ('Author l-f', 'author l-f'),
-            ('cat', 'cat'),
-            ('Year Published', 'year published'),
-            ('Original Publication Year', 'original publication year'),
-            ('Publisher', 'publisher'),
-            ('Series', 'series'),
-            ('Series-#', 'series-#'),
-            ('Private Notes', 'private notes'),
-            ('Description', 'description'),
-            ('Removal Reason', 'removal reason'),
-            ('Critic', 'critic'),
-            ('Recommendation', 'recommendation'),
-            ('Book Club', 'book club'),
-            ('Book Club Date', 'book club date'),
-        ]
+        ordered = [('Pages', 'number of pages'), ('Title', 'title'), ('Author l-f', 'author l-f'), ('cat', 'cat'), ('Private Notes', 'private notes'), ('Exclusive Shelf', 'exclusive shelf'), ('Date Read', 'date read'), ('My Rating', 'my rating'), ('Read Count', 'read count'), ('Year Published', 'year published'), ('Original Publication Year', 'original publication year'), ('Publisher', 'publisher'), ('ISBN', 'isbn'), ('DOI', 'doi'), ('Book Id - Goodreads', 'book id - goodreads'), ('Description', 'description')]
         lines = []
         used = set()
         for label, key in ordered:
             value = fields.get(key, '')
             if not value:
-                fallback = {
-                    'number of pages': book.pages,
-                    'title': book.title,
-                    'author l-f': book.author,
-                    'exclusive shelf': book.shelf,
-                    'my rating': book.my_rating,
-                    'year published': book.year,
-                    'publisher': book.publisher,
-                    'isbn': book.isbn,
-                    'book id - goodreads': book.goodreads_id,
-                    'series': series_name(book),
-                    'series-#': '' if series_number(book) is None else str(series_number(book)),
-                    'description': book.description,
-                }
+                fallback = {'number of pages': book.pages, 'title': book.title, 'author l-f': book.author, 'exclusive shelf': book.shelf, 'my rating': book.my_rating, 'year published': book.year, 'publisher': book.publisher, 'isbn': book.isbn, 'book id - goodreads': book.goodreads_id, 'series': series_name(book), 'series-#': '' if series_number(book) is None else str(series_number(book)), 'description': book.description}
                 value = fallback.get(key, '')
             if key == 'description' and value:
                 pass
