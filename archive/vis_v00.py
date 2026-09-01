@@ -1,39 +1,32 @@
 # I have one Excel file with two sheets:
-#
-# BOOKS_all contains my book dataset, including Goals, Title,
-# Author l-f, and Display.
-#
-# Ranking contains Statistical Rank, Title, and Author.
-#
-# Create a Python visualization of my books as an interactive
-# video-game-style tech tree.
-#
-# Requirements:
-#
-# - Use BOOKS_all for book data.
-# - Match books between sheets using Title + Author l-f ↔ Title + Author.
-# - Use Ranking["Statistical Rank"] as Rank.
-# - Rank means progression/"next": Rank 1 at the top, increasing ranks downward.
-# - Goals contain multiple goals separated by ;.
-# - A book belonging to multiple Goals must remain one node, not duplicated.
-# - Goals should form vertical branches/lanes across the canvas.
-# - Display each book's Title and Author l-f clearly.
-# - Books with Display == "CURRENTLY READING" are RED.
-# - All other books are BLUE.
-# - The dataset contains thousands of books, so make it interactive and scalable.
-# - Avoid all-to-all book connections and visual "hairballs".
-# - Books without a Goal should be placed in an Unassigned branch.
-# - Books without a matching Statistical Rank should be reported and excluded.
-# - The visualization must fill the entire browser window.
-# - Resize automatically when the browser window changes size.
-# - Use a dark, polished, game-like visual style.
-# - Output a standalone interactive HTML file and open it automatically.
-# - Keep the Python code reasonably short and self-contained.
-#
-# Installation:
-#
-#     pip install pandas openpyxl plotly
 
+# BOOKS_all contains my book dataset, including Goals, Title, and Author l-f.
+
+# Ranking contains Statistical Rank, Title, and Author.
+
+# Create a Python visualization of my books as an interactive video-game-style tech tree.
+
+# Requirements:
+
+# Use BOOKS_all for book data.
+# Match books between sheets using Title + Author l-f ↔ Title + Author.
+# Use Ranking["Statistical Rank"] as Rank.
+# Rank means progression/"next": Rank 1 at the top, increasing ranks downward, so rotate the conventional left-to-right tree by 90°.
+# Goals contains multiple goals separated by ;, e.g. Computer Vision; Economics.
+# A book belonging to multiple Goals must remain one node, not be duplicated.
+# Goals should form vertical branches/lanes across the canvas.
+# Display each book's Title and Author l-f clearly.
+# The dataset contains thousands of books, so make it interactive and scalable with zooming, panning, hover information, and search/filtering where practical.
+# Avoid all-to-all book connections and visual "hairballs".
+# Books without a Goal should be placed in an Unassigned branch.
+# Books without a matching Statistical Rank should be reported and excluded.
+# The visualization must fill the entire browser window (100% width and 100% height) and resize automatically when the browser window changes size.
+# Remove unnecessary margins, borders, and fixed canvas dimensions.
+# Use a dark, polished, game-like visual style.
+# Output a standalone interactive HTML file and open it automatically in the browser.
+# Keep the Python code reasonably short and self-contained.
+# Include package installation instructions.
+# Provide the complete executable Python script, not pseudocode.
 
 import re
 import webbrowser
@@ -52,10 +45,6 @@ OUTPUT_FILE = "book_tech_tree.html"
 
 X_SPACING = 6
 Y_SPACING = 5
-
-# Node colours
-CURRENTLY_READING_COLOR = "#EF4444"   # Red
-DEFAULT_BOOK_COLOR = "#2563EB"        # Blue
 
 
 # ============================================================
@@ -83,6 +72,10 @@ def clean_author(value):
     """Normalise author names, including 'Last, First'."""
 
     value = clean_text(value)
+
+    # Convert:
+    # "marx karl" / "marx, karl"
+    # into a consistent token representation.
 
     parts = value.split()
 
@@ -120,14 +113,13 @@ print(f"Ranking rows:   {len(ranking):,}")
 required_books = [
     "Title",
     "Author l-f",
-    "Goals",
+    "Goals"
 ]
 
 required_ranking = [
     "Title",
     "Author",
-    "Statistical Rank",
-    "Display"
+    "Statistical Rank"
 ]
 
 missing_books = [
@@ -215,8 +207,7 @@ rank_by_author = (
         [
             "title_key",
             "author_key",
-            "Rank",
-            "Display"
+            "Rank"
         ]
     ]
 )
@@ -230,16 +221,7 @@ books = books.merge(
     how="left"
 )
 
-# Clean Display value brought across from Ranking
-books["Display"] = (
-    books["Display"]
-    .fillna("")
-    .astype(str)
-    .str.strip()
-)
-
 matched_author = books["Rank"].notna()
-
 
 print(
     f"Matched by Title + Author: "
@@ -251,6 +233,12 @@ print(
 # MATCH 2:
 # UNIQUE TITLE FALLBACK
 # ============================================================
+#
+# Some ranking systems may format authors differently.
+#
+# If a title occurs only once in Ranking, it is safe to use
+# Title alone as a fallback.
+# ============================================================
 
 unique_title_ranks = (
     ranking_valid
@@ -261,8 +249,7 @@ unique_title_ranks = (
     [
         [
             "title_key",
-            "Rank",
-            "Display"
+            "Rank"
         ]
     ]
     .drop_duplicates("title_key")
@@ -286,10 +273,6 @@ books.loc[
     "Rank"
 ] = fallback["Rank"]
 
-books.loc[
-    fallback.index,
-    "Display"
-] = fallback["Display"]
 
 matched_total = books["Rank"].notna()
 
@@ -353,13 +336,6 @@ books["Goals"] = (
     .str.strip()
 )
 
-books["Display"] = (
-    books["Display"]
-    .fillna("")
-    .astype(str)
-    .str.strip()
-)
-
 
 # ============================================================
 # FINAL FILTER
@@ -384,11 +360,6 @@ print(
     f"\nBooks rendered: {len(books):,}"
 )
 
-print(
-    f"Currently Reading: "
-    f"{(books['Display'].str.upper() == 'CURRENTLY READING').sum():,}"
-)
-
 
 # ============================================================
 # STOP CLEANLY IF NOTHING MATCHED
@@ -409,14 +380,6 @@ if books.empty:
 
 # ============================================================
 # SPLIT MULTIPLE GOALS
-# ============================================================
-#
-# Goals are separated by semicolons:
-#
-#     Computer Vision; Economics
-#
-# A book remains ONE node even when it belongs to
-# multiple Goals.
 # ============================================================
 
 goal_df = books[
@@ -473,14 +436,14 @@ print(
 # POSITIONS
 # ============================================================
 
-# Goals run horizontally.
+# Goals run horizontally
 x_pos = {
     goal: i * X_SPACING
     for i, goal in enumerate(goals)
 }
 
-# Ranks run vertically.
-# Rank 1 = top.
+# Ranks run vertically
+# Rank 1 = top
 y_pos = {
     rank: i * Y_SPACING
     for i, rank in enumerate(ranks)
@@ -523,7 +486,6 @@ book_x = []
 book_y = []
 book_text = []
 book_hover = []
-book_colors = []
 
 for i, book in books.iterrows():
 
@@ -543,25 +505,6 @@ for i, book in books.iterrows():
         (goal_df["Rank"] == book["Rank"])
     ]["Goal"].tolist()
 
-    display_value = book["Display"].strip()
-
-    # ========================================================
-    # NODE COLOUR
-    # ========================================================
-    #
-    # CURRENTLY READING = RED
-    # Everything else = BLUE
-    #
-    is_currently_reading = (
-        display_value.upper() == "CURRENTLY READING"
-    )
-
-    book_colors.append(
-        CURRENTLY_READING_COLOR
-        if is_currently_reading
-        else DEFAULT_BOOK_COLOR
-    )
-
     book_hover.append(
         f"<b>{book['Title']}</b><br>"
         f"<i>{book['Author l-f']}</i>"
@@ -570,9 +513,6 @@ for i, book in books.iterrows():
         f"<br>"
         f"<b>Goals:</b> "
         f"{', '.join(book_goals)}"
-        f"<br>"
-        f"<b>Display:</b> "
-        f"{display_value or '—'}"
     )
 
 
@@ -647,10 +587,7 @@ for i, book in books.iterrows():
 fig = go.Figure()
 
 
-# ============================================================
-# GOAL LANES
-# ============================================================
-
+# Goal lanes
 fig.add_trace(
     go.Scatter(
         x=goal_x,
@@ -667,10 +604,7 @@ fig.add_trace(
 )
 
 
-# ============================================================
-# MULTI-GOAL CONNECTIONS
-# ============================================================
-
+# Multi-goal connections
 fig.add_trace(
     go.Scatter(
         x=connection_x,
@@ -689,10 +623,7 @@ fig.add_trace(
 )
 
 
-# ============================================================
-# GOAL LABELS
-# ============================================================
-
+# Goal labels
 fig.add_trace(
     go.Scatter(
         x=[
@@ -718,10 +649,7 @@ fig.add_trace(
 )
 
 
-# ============================================================
-# BOOKS
-# ============================================================
-
+# Books
 fig.add_trace(
     go.Scatter(
         x=book_x,
@@ -735,10 +663,7 @@ fig.add_trace(
 
         marker=dict(
             size=18,
-
-            # IMPORTANT:
-            # Each node now gets its own colour.
-            color=book_colors,
+            color="#2563EB",
 
             line=dict(
                 color="#FFFFFF",
@@ -754,10 +679,7 @@ fig.add_trace(
 )
 
 
-# ============================================================
-# RANK LABELS
-# ============================================================
-
+# Rank labels
 fig.add_trace(
     go.Scatter(
         x=[

@@ -368,6 +368,7 @@ def book_from_row(row):
 
     if shelf in {
         "currently-reading",
+        "currently reading",
     }:
         shelf = "currently-reading"
 
@@ -406,7 +407,6 @@ class RankingEngine:
 
     ACTIVE_STATUSES = {
         "to-read",
-        "currently-reading",
     }
 
     ALL_STATUSES = {
@@ -661,26 +661,18 @@ class RankingEngine:
             if old_book:
                 old_status = old_book.status
 
-                # Locally assigned lifecycle states take precedence over
-                # the imported Goodreads shelf. This is important because
-                # the ranker's lifecycle buttons can change a book without
-                # requiring a fresh Goodreads export.
                 if old_status == "ignore":
                     status = "ignore"
 
-                elif old_status == "currently-reading":
-                    status = "currently-reading"
-
-                elif shelf in self.ALL_STATUSES:
-                    status = shelf
-
                 else:
-                    status = old_status
+                    status = (
+                        shelf if shelf in self.ALL_STATUSES else old_status
+                    )
 
             else:
                 status = shelf if shelf in self.ALL_STATUSES else "to-read"
-                added.append(book_id)
 
+                added.append(book_id)
 
             if status in self.ALL_STATUSES:
                 shelf = status
