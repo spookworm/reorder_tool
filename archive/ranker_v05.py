@@ -2566,148 +2566,48 @@ class RankerApp:
         self.refresh()
         self.info_var.set(f"{book.title}  →  {status.replace('-', ' ').title()}")
 
-    def get_book_goals(self, book):
-        """Return the book's goals as a normalized set.
-
-        Goals are stored in the Goodreads 'goals' field as a comma-separated
-        string, e.g. 'PIANO, CHESS, WRITE'.
-
-        This also accepts older single-goal values and semicolon-separated
-        values so existing data remains compatible.
-        """
-        fields = getattr(book, 'goodreads_fields', {}) or {}
-        raw = normalize(fields.get('goals', ''))
-
-        if not raw:
-            return set()
-
-        # Support both comma and semicolon separated goal values.
-        parts = re.split(r'[,;]', raw)
-
-        valid_goals = {name for name, _ in GOALS}
-
-        return {
-            normalize(part).upper()
-            for part in parts
-            if normalize(part).upper() in valid_goals
-        }
-
     def set_goal(self, side, goal):
-        """Toggle one goal without affecting the other selected goals."""
         if not self.engine or not self.current_pair:
             return
 
-        book_id = (
-            self.current_pair[0]
-            if side == 'left'
-            else self.current_pair[1]
-        )
-
+        book_id = self.current_pair[0] if side == 'left' else self.current_pair[1]
         book = self.engine.library.get(book_id)
-
         if not book:
             return
 
         goal = normalize(goal).upper()
-
         valid_goals = {name for name, _ in GOALS}
-
         if goal not in valid_goals:
             return
 
-        fields = dict(
-            getattr(
-                book,
-                'goodreads_fields',
-                {},
-            )
-            or {}
-        )
-
-        old_goal_value = fields.get('goals', '')
-
-        # Read ALL currently assigned goals.
-        selected_goals = self.get_book_goals(book)
-
-        # Toggle only the clicked goal.
-        if goal in selected_goals:
-            selected_goals.remove(goal)
-        else:
-            selected_goals.add(goal)
-
-        # Keep the saved representation deterministic.
-        ordered_goals = [
-            name
-            for name, _colour in GOALS
-            if name in selected_goals
-        ]
-
-        fields['goals'] = ', '.join(ordered_goals)
-
+        fields = dict(getattr(book, 'goodreads_fields', {}) or {})
+        old_goal = fields.get('goals', '')
+        fields['goals'] = goal
         book.goodreads_fields = fields
 
         try:
-            # Goal assignment is source-data, so persist immediately.
+            # Goal assignment is a source-data edit, so persist it immediately.
             self.save_source_workbook()
             self.save_state()
-
         except Exception as exc:
-            # Restore exactly what was there before the click.
-            fields['goals'] = old_goal_value
+            fields['goals'] = old_goal
             book.goodreads_fields = fields
-
-            messagebox.showerror(
-                'Could not update goal',
-                str(exc),
-            )
+            messagebox.showerror('Could not update goal', str(exc))
             return
 
-        self.update_goal_buttons(
-            side,
-            book,
-        )
-
-        self.set_card_details(
-            getattr(
-                self,
-                f'{side}_details',
-            ),
-            book,
-        )
-
-        if ordered_goals:
-            self.info_var.set(
-                f"{book.title}  →  Goals: {', '.join(ordered_goals)}"
-            )
-        else:
-            self.info_var.set(
-                f'{book.title}  →  No goals assigned'
-            )
+        self.update_goal_buttons(side, book)
+        self.set_card_details(getattr(self, f'{side}_details'), book)
+        self.info_var.set(f'{book.title}  →  Goal: {goal}')
 
     def update_goal_buttons(self, side, book):
-        """Show every currently assigned goal as selected."""
-        buttons = getattr(
-            self,
-            f'{side}_goal_buttons',
-            {},
-        )
-
-        selected_goals = self.get_book_goals(book)
-
+        buttons = getattr(self, f'{side}_goal_buttons', {})
+        fields = getattr(book, 'goodreads_fields', {}) or {}
+        selected = normalize(fields.get('goals', '')).upper()
         for goal, button in buttons.items():
-            if goal in selected_goals:
-                # Selected state.
-                button.configure(
-                    relief='sunken',
-                    bd=3,
-                )
+            if goal == selected:
+                button.configure(relief='sunken', bd=2)
             else:
-                # Unselected state.
-                button.configure(
-                    relief='flat',
-                    bd=0,
-                )
-
+                button.configure(relief='flat', bd=0)
 
     def lifecycle_menu(self, event, side):
         if not self.engine or not self.current_pair:
