@@ -847,21 +847,64 @@ class RankingEngine:
         return output
 
     def _pairing_pool(self):
-        currently_reading = [
-            book.id
-            for book in self.books
-            if book.status == "currently-reading"
+        """Return active books from a cohort with a usable comparison.
+
+        Currently-reading is prioritised over to-read, but if all currently-
+        reading pairs have already been compared or skipped, fall back to
+        to-read instead of making the GUI appear finished.
+        """
+
+        cohorts = [
+            [
+                book.id
+                for book in self.books
+                if book.status == "currently-reading"
+            ],
+            [
+                book.id
+                for book in self.books
+                if book.status == "to-read"
+            ],
         ]
 
-        if len(currently_reading) >= 2:
-            return currently_reading
+        for ids in cohorts:
+            if len(ids) < 2:
+                continue
 
-        to_read = [book.id for book in self.books if book.status == "to-read"]
+            for left_index in range(len(ids)):
+                for right_index in range(left_index + 1, len(ids)):
+                    left = ids[left_index]
+                    right = ids[right_index]
 
-        if len(to_read) >= 2:
-            return to_read
+                    pair = self.pair_key(left, right)
+
+                    if pair in self.played:
+                        continue
+
+                    if self.skips.get(pair, 0) > 0:
+                        continue
+
+                    if self._same_pairing_cohort(left, right):
+                        return ids
 
         return []
+
+    # def _pairing_pool(self):
+        # currently_reading = [
+            # book.id
+            # for book in self.books
+            # if book.status == "currently-reading"
+        # ]
+
+        # if len(currently_reading) >= 2:
+            # return currently_reading
+
+        # to_read = [book.id for book in self.books if book.status == "to-read"]
+
+        # if len(to_read) >= 2:
+            # return to_read
+
+        # return []
 
     def _same_pairing_cohort(self, left, right):
         if left not in self.library or right not in self.library:
@@ -1341,21 +1384,53 @@ class RankingEngine:
         self._sync_books()
         self._replay()
 
-    def progress(self):
-        if not self.books:
+    def cohort_progress(self, status):
+        books = [
+            book
+            for book in self.books
+            if book.status == status
+        ]
+
+        if not books:
             return 1.0
 
         resolved = sum(
             1
-            for book in self.books
+            for book in books
             if self.ratings[book.id].comparisons >= self.target
         )
 
         return clamp(
-            resolved / len(self.books),
+            resolved / len(books),
             0.0,
             1.0,
         )
+
+    def progress(self):
+        if not self.books:
+            return 1.0
+
+        currently_reading_progress = self.cohort_progress(
+            "currently-reading"
+        )
+
+        to_read_progress = self.cohort_progress(
+            "to-read"
+        )
+
+        active_cohorts = []
+
+        if any(book.status == "currently-reading" for book in self.books):
+            active_cohorts.append(currently_reading_progress)
+
+        if any(book.status == "to-read" for book in self.books):
+            active_cohorts.append(to_read_progress)
+
+        if not active_cohorts:
+            return 1.0
+
+        return sum(active_cohorts) / len(active_cohorts)
+
 
     def confidence_metrics(self):
         stats = self.statistics()
