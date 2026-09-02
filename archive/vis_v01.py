@@ -47,7 +47,7 @@ import plotly.graph_objects as go
 # SETTINGS
 # ============================================================
 
-EXCEL_FILE = "E:\\Sorted\\BOOX\\_SECOND_BRAIN\\NOTES_LISTS\\BOOKS_ranked.xlsx"
+EXCEL_FILE = "E:\\Sorted\\BOOX\\_SECOND_BRAIN\\NOTES_LISTS\\BOOKS.xlsx"
 OUTPUT_FILE = "book_tech_tree.html"
 
 X_SPACING = 6

@@ -1,40 +1,3 @@
-# I have one Excel file with two sheets:
-#
-# BOOKS_all contains my book dataset, including Goals, Title,
-# Author l-f, and Display.
-#
-# Ranking contains Statistical Rank, Title, and Author.
-#
-# Create a Python visualization of my books as an interactive
-# video-game-style tech tree.
-#
-# Requirements:
-#
-# - Use BOOKS_all for book data.
-# - Match books between sheets using Title + Author l-f ↔ Title + Author.
-# - Use Ranking["Statistical Rank"] as Rank.
-# - Rank means progression/"next": Rank 1 at the top, increasing ranks downward.
-# - Goals contain multiple goals separated by ;.
-# - A book belonging to multiple Goals must remain one node, not duplicated.
-# - Goals should form vertical branches/lanes across the canvas.
-# - Display each book's Title and Author l-f clearly.
-# - Books with Display == "CURRENTLY READING" are RED.
-# - All other books are BLUE.
-# - The dataset contains thousands of books, so make it interactive and scalable.
-# - Avoid all-to-all book connections and visual "hairballs".
-# - Books without a Goal should be placed in an Unassigned branch.
-# - Books without a matching Statistical Rank should be reported and excluded.
-# - The visualization must fill the entire browser window.
-# - Resize automatically when the browser window changes size.
-# - Use a dark, polished, game-like visual style.
-# - Output a standalone interactive HTML file and open it automatically.
-# - Keep the Python code reasonably short and self-contained.
-#
-# Installation:
-#
-#     pip install pandas openpyxl plotly
-
-
 import re
 import webbrowser
 from pathlib import Path
@@ -56,6 +19,11 @@ Y_SPACING = 5
 # Node colours
 CURRENTLY_READING_COLOR = "#EF4444"   # Red
 DEFAULT_BOOK_COLOR = "#2563EB"        # Blue
+
+# Multi-goal connector / junction styling
+CONNECTION_COLOR = "#64748B"
+JUNCTION_COLOR = "#F8FAFC"
+JUNCTION_LINE_COLOR = "#38BDF8"
 
 
 # ============================================================
@@ -240,7 +208,6 @@ books["Display"] = (
 
 matched_author = books["Rank"].notna()
 
-
 print(
     f"Matched by Title + Author: "
     f"{matched_author.sum():,}"
@@ -364,14 +331,13 @@ books["Display"] = (
 # ============================================================
 # FINAL FILTER
 # ============================================================
-#
+
 # A book must have BOTH:
 #
 #   1. Statistical Rank
 #   2. At least one Goal
 #
 # Nothing without both is rendered.
-# ============================================================
 
 books = books[
     books["Rank"].notna() &
@@ -410,14 +376,13 @@ if books.empty:
 # ============================================================
 # SPLIT MULTIPLE GOALS
 # ============================================================
-#
+
 # Goals are separated by semicolons:
 #
 #     Computer Vision; Economics
 #
 # A book remains ONE node even when it belongs to
 # multiple Goals.
-# ============================================================
 
 goal_df = books[
     [
@@ -428,6 +393,8 @@ goal_df = books[
     ]
 ].copy()
 
+# IMPORTANT:
+# The source data uses semicolons to separate Goals.
 goal_df["Goal"] = (
     goal_df["Goals"]
     .str.split(", ")
@@ -548,10 +515,7 @@ for i, book in books.iterrows():
     # ========================================================
     # NODE COLOUR
     # ========================================================
-    #
-    # CURRENTLY READING = RED
-    # Everything else = BLUE
-    #
+
     is_currently_reading = (
         display_value.upper() == "CURRENTLY READING"
     )
@@ -611,6 +575,11 @@ for goal in goals:
 connection_x = []
 connection_y = []
 
+# Junction points
+junction_x = []
+junction_y = []
+junction_hover = []
+
 for i, book in books.iterrows():
 
     x, y = positions[i]
@@ -621,23 +590,43 @@ for i, book in books.iterrows():
         (goal_df["Rank"] == book["Rank"])
     ]["Goal"].tolist()
 
-    for goal in book_goals:
+    # Only create junctions for books that actually
+    # belong to more than one Goal.
+    if len(book_goals) > 1:
 
-        gx = x_pos[goal]
+        for goal in book_goals:
 
-        if abs(x - gx) > 0.01:
+            gx = x_pos[goal]
 
-            connection_x.extend([
-                x,
-                gx,
-                None
-            ])
+            if abs(x - gx) > 0.01:
 
-            connection_y.extend([
-                y,
-                y,
-                None
-            ])
+                # Dotted horizontal connector
+                connection_x.extend([
+                    x,
+                    gx,
+                    None
+                ])
+
+                connection_y.extend([
+                    y,
+                    y,
+                    None
+                ])
+
+                # ------------------------------------------------
+                # NEW:
+                # Add a visible junction marker where the dotted
+                # connector reaches the Goal lane.
+                # ------------------------------------------------
+
+                junction_x.append(gx)
+                junction_y.append(y)
+
+                junction_hover.append(
+                    f"<b>Shared Goal</b><br>"
+                    f"{goal}<br><br>"
+                    f"<b>Book:</b> {book['Title']}"
+                )
 
 
 # ============================================================
@@ -679,12 +668,47 @@ fig.add_trace(
         mode="lines",
 
         line=dict(
-            color="#475569",
-            width=1,
+            color=CONNECTION_COLOR,
+            width=1.5,
             dash="dot"
         ),
 
-        hoverinfo="none"
+        hoverinfo="none",
+
+        name="Shared Goals"
+    )
+)
+
+
+# ============================================================
+# SHARED-GOAL JUNCTIONS
+# ============================================================
+
+# These markers sit ON TOP of the dotted connectors and
+# clearly indicate that the line intentionally joins the
+# Goal lane here.
+
+fig.add_trace(
+    go.Scatter(
+        x=junction_x,
+        y=junction_y,
+
+        mode="markers",
+
+        marker=dict(
+            symbol="diamond",
+            size=9,
+            color=JUNCTION_COLOR,
+            line=dict(
+                color=JUNCTION_LINE_COLOR,
+                width=2
+            )
+        ),
+
+        hovertext=junction_hover,
+        hoverinfo="text",
+
+        name="Shared Goal Junctions"
     )
 )
 
@@ -736,8 +760,7 @@ fig.add_trace(
         marker=dict(
             size=18,
 
-            # IMPORTANT:
-            # Each node now gets its own colour.
+            # Each node gets its own colour.
             color=book_colors,
 
             line=dict(
@@ -930,7 +953,7 @@ Path(
 # ============================================================
 
 print(
-    f"\nCreated: {OUTPUT_FILE}"
+    f"\\nCreated: {OUTPUT_FILE}"
 )
 
 webbrowser.open(
