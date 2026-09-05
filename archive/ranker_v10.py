@@ -1651,76 +1651,76 @@ def update_goodreads_source_sheet(
 
     id_column = headers.get("book id - goodreads")
 
-    # Goals are editable source data.  Make sure the source workbook has a
-    # Goals column, then update that exact cell for the matching book row.
-    # Matching by Goodreads ID is preferred, but we also support older/
-    # modified exports where the Goodreads ID is missing by falling back to
-    # ISBN and finally title + author.
+    # Goals are an editable source-data field.  Add the column if an older
+    # workbook does not already contain it, then write the selected goal
+    # back to the matching Goodreads row.
     goals_column = headers.get("goals")
     if not goals_column:
         goals_column = worksheet.max_column + 1
         worksheet.cell(row=1, column=goals_column).value = "Goals"
         headers["goals"] = goals_column
 
-    source_rows_by_id = {}
-    source_rows_by_isbn = {}
-    source_rows_by_title_author = {}
+    if not id_column:
+        raise ValueError(
+            "The Goodreads worksheet does not contain "
+            "'Book Id - Goodreads', so edited books cannot "
+            "be safely matched to their original rows."
+        )
 
-    for row_number in range(2, worksheet.max_row + 1):
-        goodreads_id = normalize(
-            worksheet.cell(row=row_number, column=id_column).value
-        ) if id_column else ""
-        isbn = clean_isbn(
-            worksheet.cell(row=row_number, column=headers["isbn"]).value
-        ) if headers.get("isbn") else ""
-        title = normalized_text(
-            worksheet.cell(row=row_number, column=headers["title"]).value
-        ) if headers.get("title") else ""
-        author = normalized_text(
-            worksheet.cell(row=row_number, column=headers["author l-f"]).value
-        ) if headers.get("author l-f") else ""
+    source_rows = {}
 
-        if goodreads_id:
-            source_rows_by_id[goodreads_id] = row_number
-        if isbn:
-            source_rows_by_isbn[isbn] = row_number
-        if title:
-            source_rows_by_title_author[(title, author)] = row_number
+    for row_number in range(
+        2,
+        worksheet.max_row + 1,
+    ):
+        value = normalize(
+            worksheet.cell(
+                row=row_number,
+                column=id_column,
+            ).value
+        )
+
+        if value:
+            source_rows[value] = row_number
 
     updated = 0
 
     for book in engine.library.values():
-        fields = dict(getattr(book, "goodreads_fields", {}) or {})
-        goodreads_id = normalize(book.goodreads_id)
-        isbn = clean_isbn(book.isbn or fields.get("isbn", ""))
-        title = normalized_text(book.title or fields.get("title", ""))
-        author = normalized_text(book.author or fields.get("author l-f", ""))
 
-        row_number = None
-        if goodreads_id:
-            row_number = source_rows_by_id.get(goodreads_id)
-        if row_number is None and isbn:
-            row_number = source_rows_by_isbn.get(isbn)
-        if row_number is None and title:
-            row_number = source_rows_by_title_author.get((title, author))
-        if row_number is None:
+        goodreads_id = normalize(book.goodreads_id)
+
+        if not goodreads_id:
             continue
 
-        # Write every existing Goodreads field back to its original column.
-        # Goals is explicitly written as well, so clicking a goal immediately
-        # overwrites the source workbook's Goals value.
-        for key, value in fields.items():
-            column = headers.get(normalize_header(key))
-            if not column:
-                continue
-            if normalize_header(key) == "book id - goodreads":
-                continue
-            worksheet.cell(row=row_number, column=column).value = value
+        row_number = source_rows.get(goodreads_id)
 
-        worksheet.cell(
-            row=row_number,
-            column=goals_column,
-        ).value = fields.get("goals", "")
+        if not row_number:
+            continue
+
+        fields = dict(
+            getattr(
+                book,
+                "goodreads_fields",
+                {},
+            )
+            or {}
+        )
+
+        for key, value in fields.items():
+
+            column = headers.get(normalize_header(key))
+
+            if not column:
+
+                continue
+
+            if normalize_header(key) == ("book id - goodreads"):
+                continue
+
+            worksheet.cell(
+                row=row_number,
+                column=column,
+            ).value = value
 
         updated += 1
 

@@ -1651,76 +1651,76 @@ def update_goodreads_source_sheet(
 
     id_column = headers.get("book id - goodreads")
 
-    # Goals are editable source data.  Make sure the source workbook has a
-    # Goals column, then update that exact cell for the matching book row.
-    # Matching by Goodreads ID is preferred, but we also support older/
-    # modified exports where the Goodreads ID is missing by falling back to
-    # ISBN and finally title + author.
+    # Goals are an editable source-data field.  Add the column if an older
+    # workbook does not already contain it, then write the selected goal
+    # back to the matching Goodreads row.
     goals_column = headers.get("goals")
     if not goals_column:
         goals_column = worksheet.max_column + 1
         worksheet.cell(row=1, column=goals_column).value = "Goals"
         headers["goals"] = goals_column
 
-    source_rows_by_id = {}
-    source_rows_by_isbn = {}
-    source_rows_by_title_author = {}
+    if not id_column:
+        raise ValueError(
+            "The Goodreads worksheet does not contain "
+            "'Book Id - Goodreads', so edited books cannot "
+            "be safely matched to their original rows."
+        )
 
-    for row_number in range(2, worksheet.max_row + 1):
-        goodreads_id = normalize(
-            worksheet.cell(row=row_number, column=id_column).value
-        ) if id_column else ""
-        isbn = clean_isbn(
-            worksheet.cell(row=row_number, column=headers["isbn"]).value
-        ) if headers.get("isbn") else ""
-        title = normalized_text(
-            worksheet.cell(row=row_number, column=headers["title"]).value
-        ) if headers.get("title") else ""
-        author = normalized_text(
-            worksheet.cell(row=row_number, column=headers["author l-f"]).value
-        ) if headers.get("author l-f") else ""
+    source_rows = {}
 
-        if goodreads_id:
-            source_rows_by_id[goodreads_id] = row_number
-        if isbn:
-            source_rows_by_isbn[isbn] = row_number
-        if title:
-            source_rows_by_title_author[(title, author)] = row_number
+    for row_number in range(
+        2,
+        worksheet.max_row + 1,
+    ):
+        value = normalize(
+            worksheet.cell(
+                row=row_number,
+                column=id_column,
+            ).value
+        )
+
+        if value:
+            source_rows[value] = row_number
 
     updated = 0
 
     for book in engine.library.values():
-        fields = dict(getattr(book, "goodreads_fields", {}) or {})
-        goodreads_id = normalize(book.goodreads_id)
-        isbn = clean_isbn(book.isbn or fields.get("isbn", ""))
-        title = normalized_text(book.title or fields.get("title", ""))
-        author = normalized_text(book.author or fields.get("author l-f", ""))
 
-        row_number = None
-        if goodreads_id:
-            row_number = source_rows_by_id.get(goodreads_id)
-        if row_number is None and isbn:
-            row_number = source_rows_by_isbn.get(isbn)
-        if row_number is None and title:
-            row_number = source_rows_by_title_author.get((title, author))
-        if row_number is None:
+        goodreads_id = normalize(book.goodreads_id)
+
+        if not goodreads_id:
             continue
 
-        # Write every existing Goodreads field back to its original column.
-        # Goals is explicitly written as well, so clicking a goal immediately
-        # overwrites the source workbook's Goals value.
-        for key, value in fields.items():
-            column = headers.get(normalize_header(key))
-            if not column:
-                continue
-            if normalize_header(key) == "book id - goodreads":
-                continue
-            worksheet.cell(row=row_number, column=column).value = value
+        row_number = source_rows.get(goodreads_id)
 
-        worksheet.cell(
-            row=row_number,
-            column=goals_column,
-        ).value = fields.get("goals", "")
+        if not row_number:
+            continue
+
+        fields = dict(
+            getattr(
+                book,
+                "goodreads_fields",
+                {},
+            )
+            or {}
+        )
+
+        for key, value in fields.items():
+
+            column = headers.get(normalize_header(key))
+
+            if not column:
+
+                continue
+
+            if normalize_header(key) == ("book id - goodreads"):
+                continue
+
+            worksheet.cell(
+                row=row_number,
+                column=column,
+            ).value = value
 
         updated += 1
 
@@ -1963,9 +1963,6 @@ class RankerApp:
         self.colors = DARK
         self.engine = None
         self.source_file = None
-        # While a book editor is open, all application-wide keyboard shortcuts
-        # are disabled so typing can never trigger ranking actions.
-        self.editing_mode = False
         self.state_store = None
         self.current_pair = None
         self.font = 'Segoe UI'
@@ -2317,67 +2314,26 @@ class RankerApp:
         for child in widget.winfo_children():
             self.rebuild_ui_theme(child)
 
-    def _shortcut_target_is_editable(self, event):
-        """Return True when keyboard input should belong to an editable widget.
-
-        Global shortcuts are installed with bind_all(), so without this guard
-        keys such as R, S, I, arrows, and number keys can trigger ranking
-        actions while the user is typing in an Entry or Text widget.
-        """
-        try:
-            focus = event.widget.focus_get()
-            if focus is None:
-                return False
-
-            widget_class = focus.winfo_class()
-            editable_classes = {
-                'Entry', 'TEntry',
-                'Text',
-                'Spinbox', 'TSpinbox',
-                'Combobox', 'TCombobox',
-            }
-            return widget_class in editable_classes
-        except tk.TclError:
-            return False
-
-    def _global_shortcut(self, callback):
-        """Wrap an application-wide shortcut.
-
-        A modal Edit Book window puts the app into a dedicated editing mode.
-        During that mode *all* global shortcuts are ignored, regardless of
-        which widget currently has focus. This is stronger than checking only
-        for Entry/Text focus and prevents shortcuts from firing from buttons,
-        comboboxes, or any other editor control.
-        """
-        def handler(event):
-            if self.editing_mode:
-                return
-            if self._shortcut_target_is_editable(event):
-                return 'break'
-            callback(event)
-            return 'break'
-        return handler
-
     def bind_shortcuts(self):
         root = self.root
-        root.bind_all('<KeyPress-1>', self._global_shortcut(lambda event: self.choose('left')))
-        root.bind_all('<KeyPress-2>', self._global_shortcut(lambda event: self.choose('right')))
-        root.bind_all('<Up>', self._global_shortcut(lambda event: self.choose('tie')))
-        root.bind_all('<KeyPress-4>', self._global_shortcut(lambda event: self.skip()))
-        root.bind_all('<KeyPress-s>', self._global_shortcut(lambda event: self.skip()))
-        root.bind_all('<KeyPress-S>', self._global_shortcut(lambda event: self.skip()))
-        root.bind_all('<Left>', self._global_shortcut(lambda event: self.choose('left')))
-        root.bind_all('<Right>', self._global_shortcut(lambda event: self.choose('right')))
-        root.bind_all('<KeyPress-u>', self._global_shortcut(lambda event: self.undo()))
-        root.bind_all('<KeyPress-U>', self._global_shortcut(lambda event: self.undo()))
-        root.bind_all('<KeyPress-i>', self._global_shortcut(lambda event: self.set_lifecycle('left', 'ignore')))
-        root.bind_all('<KeyPress-r>', self._global_shortcut(lambda event: self.set_lifecycle('left', 'read')))
-        root.bind_all('<KeyPress-c>', self._global_shortcut(lambda event: self.set_lifecycle('left', 'currently-reading')))
-        root.bind_all('<Shift-I>', self._global_shortcut(lambda event: self.set_lifecycle('right', 'ignore')))
-        root.bind_all('<Shift-R>', self._global_shortcut(lambda event: self.set_lifecycle('right', 'read')))
-        root.bind_all('<Shift-C>', self._global_shortcut(lambda event: self.set_lifecycle('right', 'currently-reading')))
-        root.bind_all('<Control-o>', self._global_shortcut(lambda event: self.open_excel()))
-        root.bind_all('<Control-e>', self._global_shortcut(lambda event: self.export()))
+        root.bind_all('<KeyPress-1>', lambda event: self.choose('left'))
+        root.bind_all('<KeyPress-2>', lambda event: self.choose('right'))
+        root.bind_all('<Up>', lambda event: self.choose('tie'))
+        root.bind_all('<KeyPress-4>', lambda event: self.skip())
+        root.bind_all('<KeyPress-s>', lambda event: self.skip())
+        root.bind_all('<KeyPress-S>', lambda event: self.skip())
+        root.bind_all('<Left>', lambda event: self.choose('left'))
+        root.bind_all('<Right>', lambda event: self.choose('right'))
+        root.bind_all('<KeyPress-u>', lambda event: self.undo())
+        root.bind_all('<KeyPress-U>', lambda event: self.undo())
+        root.bind_all('<KeyPress-i>', lambda event: self.set_lifecycle('left', 'ignore'))
+        root.bind_all('<KeyPress-r>', lambda event: self.set_lifecycle('left', 'read'))
+        root.bind_all('<KeyPress-c>', lambda event: self.set_lifecycle('left', 'currently-reading'))
+        root.bind_all('<Shift-I>', lambda event: self.set_lifecycle('right', 'ignore'))
+        root.bind_all('<Shift-R>', lambda event: self.set_lifecycle('right', 'read'))
+        root.bind_all('<Shift-C>', lambda event: self.set_lifecycle('right', 'currently-reading'))
+        root.bind_all('<Control-o>', lambda event: self.open_excel())
+        root.bind_all('<Control-e>', lambda event: self.export())
 
     def build_shortcut_panel(self):
         c = self.colors
@@ -2513,7 +2469,6 @@ class RankerApp:
             return
         fields = dict(getattr(book, 'goodreads_fields', {}) or {})
         editor = tk.Toplevel(self.root)
-        self.editing_mode = True
         editor.title(f'Edit Book — {book.title}')
         editor.geometry('700x750')
         editor.configure(bg=self.colors['bg'])
@@ -2557,20 +2512,6 @@ class RankerApp:
         buttons = tk.Frame(editor, bg=self.colors['bg'])
         buttons.pack(fill='x', padx=14, pady=(0, 14))
 
-        editor_closed = False
-
-        def close_editor():
-            nonlocal editor_closed
-            if editor_closed:
-                return
-            editor_closed = True
-            self.editing_mode = False
-            try:
-                editor.grab_release()
-            except tk.TclError:
-                pass
-            editor.destroy()
-
         def save_changes():
             for key, variable in variables.items():
                 fields[key] = normalize(variable.get())
@@ -2603,12 +2544,10 @@ class RankerApp:
             self.engine._sync_books()
             self.engine._replay()
             self.save_state()
-            close_editor()
+            editor.destroy()
             self.refresh()
             self.info_var.set(f'Saved changes to: {book.title}')
-
-        editor.protocol('WM_DELETE_WINDOW', close_editor)
-        ttk.Button(buttons, text='Cancel', command=close_editor).pack(side='right', padx=4)
+        ttk.Button(buttons, text='Cancel', command=editor.destroy).pack(side='right', padx=4)
         ttk.Button(buttons, text='Save Changes', style='Accent.TButton', command=save_changes).pack(side='right', padx=4)
         editor.bind('<Control-s>', lambda event: save_changes())
         if fields_to_edit:
