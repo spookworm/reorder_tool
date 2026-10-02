@@ -1790,12 +1790,10 @@ def export_results(
             engine,
         )
 
-        ranking_sheet_name = f"Ranking - {engine.scope}"
+        if "Ranking" in workbook.sheetnames:
+            del workbook["Ranking"]
 
-        if ranking_sheet_name in workbook.sheetnames:
-            del workbook[ranking_sheet_name]
-
-        ranking = workbook.create_sheet(ranking_sheet_name)
+        ranking = workbook.create_sheet("Ranking")
 
         headings = [
             "Display",

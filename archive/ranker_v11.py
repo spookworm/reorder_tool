@@ -26,8 +26,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 
 APP_NAME = "Goodreads To-Read Ranker"
-APP_VERSION = "6.2.0-TWO-RANKING-MODES"
-STATE_VERSION = 10
+APP_VERSION = "6.1.0-SHELF-SEGMENTED"
+STATE_VERSION = 9
 
 TOP_K = 25
 TOP_10 = 10
@@ -42,17 +42,6 @@ PAIR_CANDIDATE_LIMIT = 3000
 
 WINDOW_WIDTH = 1180
 WINDOW_HEIGHT = 800
-
-RANKING_SCOPES = {
-    "ACTIVE": {
-        "label": "Currently reading + to-read",
-        "statuses": {"to-read", "currently-reading"},
-    },
-    "READ": {
-        "label": "Read — all time",
-        "statuses": {"read"},
-    },
-}
 
 PRESETS = {
     "QUICK": (3, False),
@@ -435,8 +424,6 @@ class RankingEngine:
         comparisons=None,
         statuses=None,
         skips=None,
-        scope="ACTIVE",
-        comparisons_by_scope=None,
     ):
         if books is None:
             books = []
@@ -446,8 +433,6 @@ class RankingEngine:
         }
 
         self.mode = mode if mode in PRESETS else "TOP_25_FOCUS"
-        self.scope = scope if scope in RANKING_SCOPES else "ACTIVE"
-        self.active_statuses = set(RANKING_SCOPES[self.scope]["statuses"])
 
         self.target, self.top_focus = PRESETS[self.mode]
 
@@ -464,21 +449,9 @@ class RankingEngine:
 
         self.ratings = {}
 
-        legacy_comparisons = (
+        self.comparisons = (
             copy.deepcopy(comparisons) if isinstance(comparisons, list) else []
         )
-        self.comparison_sets = {
-            "ACTIVE": [],
-            "READ": [],
-        }
-        if isinstance(comparisons_by_scope, dict):
-            for key in self.comparison_sets:
-                value = comparisons_by_scope.get(key)
-                if isinstance(value, list):
-                    self.comparison_sets[key] = copy.deepcopy(value)
-        if not any(self.comparison_sets.values()) and legacy_comparisons:
-            self.comparison_sets["ACTIVE"] = legacy_comparisons
-        self.comparisons = copy.deepcopy(self.comparison_sets[self.scope])
 
         self.played = set()
         self.skips = {}
@@ -535,7 +508,7 @@ class RankingEngine:
         self.books = [
             book
             for book in self.library.values()
-            if book.status in self.active_statuses
+            if book.status in self.ACTIVE_STATUSES
         ]
 
     def active_ids(self):
@@ -642,20 +615,6 @@ class RankingEngine:
                     self.ratings[left].rating += winner_bonus
                 elif result == "right":
                     self.ratings[right].rating += winner_bonus
-
-    def set_scope(self, scope):
-        if scope not in RANKING_SCOPES:
-            raise ValueError(f"Invalid ranking scope: {scope}")
-        if scope == self.scope:
-            return
-        self.comparison_sets[self.scope] = copy.deepcopy(self.comparisons)
-        self.scope = scope
-        self.active_statuses = set(RANKING_SCOPES[scope]["statuses"])
-        self.comparisons = copy.deepcopy(self.comparison_sets[scope])
-        self._sync_books()
-        self._replay()
-        if self._apply_series_order_comparisons():
-            self._replay()
 
     def sync_goodreads(self, rows):
 
@@ -888,31 +847,25 @@ class RankingEngine:
         return output
 
     def _pairing_pool(self):
-        """Return books from the current ranking scope with a usable pair.
+        """Return active books from a cohort with a usable comparison.
 
-        The normal scope keeps the existing priority of currently-reading
-        before to-read. The all-time scope is a single cohort containing only
-        books on the Read shelf.
+        Currently-reading is prioritised over to-read, but if all currently-
+        reading pairs have already been compared or skipped, fall back to
+        to-read instead of making the GUI appear finished.
         """
-        if self.scope == "READ":
-            cohorts = [[
+
+        cohorts = [
+            [
                 book.id
                 for book in self.books
-                if book.status == "read"
-            ]]
-        else:
-            cohorts = [
-                [
-                    book.id
-                    for book in self.books
-                    if book.status == "currently-reading"
-                ],
-                [
-                    book.id
-                    for book in self.books
-                    if book.status == "to-read"
-                ],
-            ]
+                if book.status == "currently-reading"
+            ],
+            [
+                book.id
+                for book in self.books
+                if book.status == "to-read"
+            ],
+        ]
 
         for ids in cohorts:
             if len(ids) < 2:
@@ -922,11 +875,15 @@ class RankingEngine:
                 for right_index in range(left_index + 1, len(ids)):
                     left = ids[left_index]
                     right = ids[right_index]
+
                     pair = self.pair_key(left, right)
+
                     if pair in self.played:
                         continue
+
                     if self.skips.get(pair, 0) > 0:
                         continue
+
                     if self._same_pairing_cohort(left, right):
                         return ids
 
@@ -957,7 +914,7 @@ class RankingEngine:
         right_status = self.library[right].status
 
         return (
-            left_status == right_status and left_status in self.active_statuses
+            left_status == right_status and left_status in self.ACTIVE_STATUSES
         )
 
     def choose_pair(self):
@@ -1224,7 +1181,7 @@ class RankingEngine:
         groups = {}
 
         for book in self.library.values():
-            if book.status not in self.active_statuses:
+            if book.status not in self.ACTIVE_STATUSES:
                 continue
 
             name = series_name(book)
@@ -1453,12 +1410,26 @@ class RankingEngine:
         if not self.books:
             return 1.0
 
-        resolved = sum(
-            1
-            for book in self.books
-            if self.ratings[book.id].comparisons >= self.target
+        currently_reading_progress = self.cohort_progress(
+            "currently-reading"
         )
-        return clamp(resolved / len(self.books), 0.0, 1.0)
+
+        to_read_progress = self.cohort_progress(
+            "to-read"
+        )
+
+        active_cohorts = []
+
+        if any(book.status == "currently-reading" for book in self.books):
+            active_cohorts.append(currently_reading_progress)
+
+        if any(book.status == "to-read" for book in self.books):
+            active_cohorts.append(to_read_progress)
+
+        if not active_cohorts:
+            return 1.0
+
+        return sum(active_cohorts) / len(active_cohorts)
 
 
     def confidence_metrics(self):
@@ -1543,14 +1514,9 @@ class RankingEngine:
             "state_version": STATE_VERSION,
             "app_version": APP_VERSION,
             "mode": self.mode,
-            "scope": self.scope,
             "target": self.target,
             "seed": self.seed,
             "comparisons": self.comparisons,
-            "comparisons_by_scope": {
-                **copy.deepcopy(self.comparison_sets),
-                self.scope: copy.deepcopy(self.comparisons),
-            },
             "skips": {
                 "|".join(pair): value for pair, value in self.skips.items()
             },
@@ -1790,12 +1756,10 @@ def export_results(
             engine,
         )
 
-        ranking_sheet_name = f"Ranking - {engine.scope}"
+        if "Ranking" in workbook.sheetnames:
+            del workbook["Ranking"]
 
-        if ranking_sheet_name in workbook.sheetnames:
-            del workbook[ranking_sheet_name]
-
-        ranking = workbook.create_sheet(ranking_sheet_name)
+        ranking = workbook.create_sheet("Ranking")
 
         headings = [
             "Display",
@@ -1848,12 +1812,12 @@ def export_results(
             book = item["book"]
             rating = item["rating"]
 
-            if engine.scope == "READ":
-                display = "ALL-TIME READ"
-            elif book.status == "currently-reading":
+            if book.status == "currently-reading":
                 display = "CURRENTLY READING"
+
             elif item["rank"] <= TOP_K:
                 display = "TOP 25"
+
             else:
                 display = "QUEUE"
 
@@ -1926,7 +1890,7 @@ def export_results(
                 now_iso(),
             ],
             [
-                "Books in ranking scope",
+                "Active books",
                 len(engine.books),
             ],
             [
@@ -2086,9 +2050,9 @@ class RankerApp:
         header = tk.Frame(self.main, bg=c['bg'])
         header.grid(row=0, column=0, sticky='ew')
         header.grid_columnconfigure(1, weight=1)
-        title = tk.Label(header, text='📚  GOODREADS BOOK RANKER', bg=c['bg'], fg=c['text'], font=(self.font, 15, 'bold'))
+        title = tk.Label(header, text='📚  GOODREADS TO-READ RANKER', bg=c['bg'], fg=c['text'], font=(self.font, 15, 'bold'))
         title.grid(row=0, column=0, sticky='w')
-        subtitle = tk.Label(header, text=f'TWO RANKING MODES  •  HUMAN CHOICES ONLY  •  ADAPTIVE EVIDENCE  •  {APP_VERSION}', bg=c['bg'], fg=c['accent'], font=(self.font, 8, 'bold'))
+        subtitle = tk.Label(header, text=f'TOP-25 FOCUS  •  HUMAN CHOICES ONLY  •  ADAPTIVE EVIDENCE  •  {APP_VERSION}', bg=c['bg'], fg=c['accent'], font=(self.font, 8, 'bold'))
         subtitle.grid(row=1, column=0, sticky='w')
         self.reading_totals_var = tk.StringVar(
             value='📄 0 pages   •   🔤 0 words'
@@ -2103,10 +2067,6 @@ class RankerApp:
         ).grid(row=2, column=0, sticky='w', pady=(5, 0))
         controls = tk.Frame(header, bg=c['bg'])
         controls.grid(row=0, column=1, rowspan=3, sticky='e')
-        self.scope_var = tk.StringVar(value='ACTIVE')
-        scope_box = ttk.Combobox(controls, textvariable=self.scope_var, values=list(RANKING_SCOPES), state='readonly', width=22)
-        scope_box.pack(side='left', padx=3)
-        scope_box.bind('<<ComboboxSelected>>', self.change_scope)
         self.mode_var = tk.StringVar(value='TOP_25_FOCUS')
         mode_box = ttk.Combobox(controls, textvariable=self.mode_var, values=list(PRESETS), state='readonly', width=16)
         mode_box.pack(side='left', padx=3)
@@ -2464,10 +2424,9 @@ class RankerApp:
                         elif saved_status == 'currently-reading' and shelf in {'to-read', 'currently-reading'}:
                             book.status = 'currently-reading'
                 saved_statuses = {key: value.get('status', 'to-read') for key, value in saved_books.items() if isinstance(value, dict)}
-                self.engine = RankingEngine(books, mode=raw_state.get('mode', 'TOP_25_FOCUS'), seed=raw_state.get('seed'), comparisons=raw_state.get('comparisons', []), comparisons_by_scope=raw_state.get('comparisons_by_scope'), scope=raw_state.get('scope', 'ACTIVE'), statuses=saved_statuses, skips=raw_state.get('skips', {}))
+                self.engine = RankingEngine(books, mode=raw_state.get('mode', 'TOP_25_FOCUS'), seed=raw_state.get('seed'), comparisons=raw_state.get('comparisons', []), statuses=saved_statuses, skips=raw_state.get('skips', {}))
                 self.engine.sync_goodreads(rows)
                 self.mode_var.set(self.engine.mode)
-                self.scope_var.set(self.engine.scope)
             else:
                 self.engine = RankingEngine(books, mode=self.mode_var.get())
             self.state_store.save(self.engine)
@@ -2475,20 +2434,6 @@ class RankerApp:
             self.refresh()
         except Exception as exc:
             messagebox.showerror('Could not open Goodreads workbook', f"{exc}\n\nIf this is a Goodreads export, make sure the workbook contains a 'Title' column.")
-
-    def change_scope(self, _event=None):
-        if not self.engine:
-            return
-        scope = self.scope_var.get()
-        if scope not in RANKING_SCOPES:
-            return
-        try:
-            self.engine.set_scope(scope)
-            self.save_state()
-            self.current_pair = None
-            self.refresh()
-        except Exception as exc:
-            messagebox.showerror('Could not change ranking mode', str(exc))
 
     def change_mode(self, _event=None):
         if not self.engine:
@@ -2511,7 +2456,7 @@ class RankerApp:
         self.current_pair = self.engine.choose_pair()
         self.show_current_pair()
         metrics = self.engine.confidence_metrics()
-        self.info_var.set(f"{len(self.engine.books)} {RANKING_SCOPES[self.engine.scope]['label'].lower()} books  •  {len(self.engine.comparisons)} decisions  •  Top-10 {metrics['top10_confidence'] * 100:.0f}%  •  Top-25 {metrics['top25_confidence'] * 100:.0f}%  •  stability {metrics['top25_stability'] * 100:.0f}%  •  {metrics['unresolved_boundary']} boundary unresolved")
+        self.info_var.set(f"{len(self.engine.books)} active books  •  {len(self.engine.comparisons)} decisions  •  Top-10 {metrics['top10_confidence'] * 100:.0f}%  •  Top-25 {metrics['top25_confidence'] * 100:.0f}%  •  stability {metrics['top25_stability'] * 100:.0f}%  •  {metrics['unresolved_boundary']} boundary unresolved")
 
     def show_current_pair(self):
         if not self.current_pair:
@@ -2523,7 +2468,7 @@ class RankerApp:
             self.left_status.set('ANALYSIS')
             self.right_status.set('HUMAN CHOICE REQUIRED')
             self.set_description(self.left_description, 'The adaptive engine does not invent preferences. Export the ranking or continue refining it.')
-            self.set_description(self.right_description, 'Use the lifecycle buttons to move books between Read, Currently Reading, To-read and Ignore.')
+            self.set_description(self.right_description, 'Use the lifecycle buttons if a book becomes Read, Currently Reading or Ignore.')
             return
         self.left_button.configure(state='normal')
         self.tie_button.configure(state='normal')
@@ -3016,8 +2961,8 @@ class RankerApp:
         window.geometry('1450x760')
         window.configure(bg=self.colors['bg'])
         metrics = self.engine.confidence_metrics()
-        tk.Label(window, text=f'🏆  {RANKING_SCOPES[self.engine.scope]["label"].upper()}', bg=self.colors['bg'], fg=self.colors['text'], font=(self.font, 18, 'bold')).pack(anchor='w', padx=14, pady=(12, 2))
-        tk.Label(window, text=f"{len(self.engine.books)} books  •  {len(self.engine.comparisons)} decisions  •  Top-10 confidence {metrics['top10_confidence'] * 100:.0f}%  •  Top-25 confidence {metrics['top25_confidence'] * 100:.0f}%  •  stability {metrics['top25_stability'] * 100:.0f}%  •  {metrics['unresolved_boundary']} unresolved boundary", bg=self.colors['bg'], fg=self.colors['muted'], font=(self.font, 9)).pack(anchor='w', padx=14, pady=(0, 8))
+        tk.Label(window, text='🏆  CURRENT READING + TOP-25', bg=self.colors['bg'], fg=self.colors['text'], font=(self.font, 18, 'bold')).pack(anchor='w', padx=14, pady=(12, 2))
+        tk.Label(window, text=f"Top-10 confidence {metrics['top10_confidence'] * 100:.0f}%  •  Top-25 confidence {metrics['top25_confidence'] * 100:.0f}%  •  stability {metrics['top25_stability'] * 100:.0f}%  •  {metrics['unresolved_boundary']} unresolved boundary", bg=self.colors['bg'], fg=self.colors['muted'], font=(self.font, 9)).pack(anchor='w', padx=14, pady=(0, 8))
         columns = ('priority', 'rank', 'title', 'author', 'status', 'rating', 'rd', 'interval', 'top10', 'top25', 'decisions')
         tree = ttk.Treeview(window, columns=columns, show='headings')
         headings = {'priority': 'Priority', 'rank': 'Rank', 'title': 'Title', 'author': 'Author', 'status': 'Status', 'rating': 'Rating', 'rd': 'RD', 'interval': 'Likely rank', 'top10': 'Top 10 %', 'top25': 'Top 25 %', 'decisions': 'Decisions'}
@@ -3235,11 +3180,7 @@ def run_self_test():
         "left",
     )
 
-    fallback_pair = segmented_engine.choose_pair()
-    assert fallback_pair is not None
-    assert {
-        segmented_engine.library[book_id].status for book_id in fallback_pair
-    } == {"to-read"}
+    assert segmented_engine.choose_pair() is None
 
     to_read_engine = RankingEngine(
         [
@@ -3469,30 +3410,6 @@ def run_self_test():
         result = imported_engine.sync_goodreads(imported_rows)
 
         assert result["active"] == 2
-
-    read_books = [
-        Book(id="read-1", title="Read One", shelf="read", status="read"),
-        Book(id="read-2", title="Read Two", shelf="read", status="read"),
-        Book(id="queue-1", title="Queue One", shelf="to-read", status="to-read"),
-    ]
-    two_mode_engine = RankingEngine(read_books, seed=123)
-    assert {book.id for book in two_mode_engine.books} == {"queue-1"}
-    assert two_mode_engine.choose_pair() is None
-    two_mode_engine.set_scope("READ")
-    assert {book.id for book in two_mode_engine.books} == {"read-1", "read-2"}
-    pair = two_mode_engine.choose_pair()
-    assert pair is not None
-    two_mode_engine.apply_match(pair[0], pair[1], "left")
-    assert len(two_mode_engine.comparisons) == 1
-    two_mode_engine.set_scope("ACTIVE")
-    assert two_mode_engine.comparisons == []
-    assert {book.id for book in two_mode_engine.books} == {"queue-1"}
-    two_mode_engine.set_scope("READ")
-    assert len(two_mode_engine.comparisons) == 1
-    state = two_mode_engine.to_state()
-    assert state["scope"] == "READ"
-    assert len(state["comparisons_by_scope"]["READ"]) == 1
-    assert state["comparisons_by_scope"]["ACTIVE"] == []
 
     _test_series_import_creates_real_comparisons()
     _test_manual_winner_bonus()
